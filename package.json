@@ -1,0 +1,40 @@
+{
+  "name": "twitter-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "ts-node src/clear-queues.ts && concurrently --handle-input \"ts-node-dev src/finder.ts\" \"ts-node-dev src/brain.ts\" \"ts-node-dev src/poster.ts\" \"ts-node-dev src/logger.ts\"",
+    "lint": "eslint src --ext .ts",
+    "test": "jest",
+    "e2e": "playwright test",
+    "build": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "bullmq": "^5.52.2",
+    "dotenv": "^16.5.0",
+    "fastify": "^5.3.3",
+    "ioredis": "^5.6.1",
+    "openai": "^4.98.0",
+    "pino": "^9.6.0",
+    "playwright": "^1.52.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.15.18",
+    "@typescript-eslint/eslint-plugin": "^8.32.1",
+    "@typescript-eslint/parser": "^8.32.1",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.26.0",
+    "jest": "^29.7.0",
+    "pino-pretty": "^13.0.0",
+    "ts-jest": "^29.3.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.8.3"
+  }
+}
