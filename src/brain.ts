@@ -10,7 +10,15 @@ dotenv.config();
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REDIS_URL = process.env.REDIS_URL;
-const PERSONA_FILE_PATH = process.env.PERSONA_PATH || 'persona.md';
+
+// To switch personas, change the filename in the line below:
+// e.g., 'persona.md' or 'persona_2.md'
+// const DEFAULT_PERSONA_FILENAME = 'persona_2.md'; // <--- EDIT THIS LINE TO SWITCH PERSONA
+// const PERSONA_FILE_PATH = process.env.PERSONA_PATH || DEFAULT_PERSONA_FILENAME;
+
+// Persona filename is controlled by the BRAIN_PERSONA_FILENAME environment variable
+const BRAIN_PERSONA_FILENAME = process.env.BRAIN_PERSONA_FILENAME || 'persona_2.md'; // Default to persona_2.md if not set
+const PERSONA_FILE_PATH = path.resolve(BRAIN_PERSONA_FILENAME); // Resolve to an absolute path
 
 if (!OPENAI_API_KEY) {
   console.error('Brain Agent: Error - OPENAI_API_KEY is not defined. Please set it in your .env file.');
@@ -57,9 +65,9 @@ const approvedTweetsQueue = new Queue(approvedTweetsQueueName, {
 let personaContent: string = 'Default persona: Be helpful and concise.'; // Fallback persona
 async function loadPersona() {
   try {
-    const fullPath = path.resolve(PERSONA_FILE_PATH);
-    console.log(`Brain Agent: Loading persona from ${fullPath}`);
-    personaContent = await fs.readFile(fullPath, 'utf8');
+    // const fullPath = path.resolve(PERSONA_FILE_PATH); // PERSONA_FILE_PATH is already resolved
+    console.log(`Brain Agent: Loading persona from ${PERSONA_FILE_PATH}`);
+    personaContent = await fs.readFile(PERSONA_FILE_PATH, 'utf8');
     console.log('Brain Agent: Persona loaded successfully.');
   } catch (error) {
     console.error(`Brain Agent: Error loading persona file from ${PERSONA_FILE_PATH}. Using fallback persona.`, error);
@@ -106,9 +114,7 @@ async function processTweetJob(job: Job<any, any, string>) {
         { role: 'system', content: personaContent },
         {
           role: 'user',
-          content: `Based on the persona provided, draft a concise and engaging reply to the following tweet. The reply should be suitable for Twitter and ideally under 280 characters. \
-Avoid using quotation marks in the reply. \
-Structure the reply for high readability on Twitter. Use short sentences and consider paragraph breaks (using \n) for clarity where appropriate. Aim for a hook, key insights, and perhaps a concluding question if it fits the context and persona.:\n\nTweet:\n"""\n${fullTweetContent}\n"""\n\nReply:`,
+          content: `Tweet to reply to:\n"""\n${fullTweetContent}\n"""\n\nDraft your reply based on the persona provided in the system message.`,
         },
       ],
       max_tokens: 70, // Approx 280 chars, good for Twitter replies

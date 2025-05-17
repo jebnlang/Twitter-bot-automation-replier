@@ -9,6 +9,12 @@ dotenv.config();
 // Apply the stealth plugin to Playwright Chromium
 chromium.use(stealth());
 
+// --- CONFIGURATION ---
+// Search mode is controlled by the FINDER_SEARCH_MODE environment variable (e.g., 'HOME' or 'COMMUNITIES')
+const SEARCH_MODE: 'HOME' | 'COMMUNITIES' = (process.env.FINDER_SEARCH_MODE === 'COMMUNITIES' ? 'COMMUNITIES' : 'HOME');
+// Target community URL is controlled by the FINDER_TARGET_COMMUNITY_URL environment variable
+const TARGET_COMMUNITY_URL = process.env.FINDER_TARGET_COMMUNITY_URL || 'https://x.com/GetTeleprompt/communities'; // Default if not set
+
 const VIEW_THRESHOLD = parseInt(process.env.VIEW_THRESHOLD || '5000', 10);
 const MAX_REPLIES_PER_RUN = parseInt(process.env.MAX_REPLIES_PER_RUN || '10', 10);
 const REDIS_URL = process.env.REDIS_URL;
@@ -101,7 +107,7 @@ async function main() {
   }
 
   // const browser = await chromium.launch({ headless: false }); // For debugging
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({
     storageState: PLAYWRIGHT_STORAGE,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
@@ -111,10 +117,28 @@ async function main() {
   const page = await context.newPage();
 
   try {
-    console.log('Finder Agent: Navigating to Twitter home...');
-    await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    console.log('Finder Agent: Successfully navigated to home.');
+    if (SEARCH_MODE === 'HOME') {
+      console.log('Finder Agent: SEARCH_MODE is HOME. Navigating to Twitter home...');
+      await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 60000 });
+      console.log('Finder Agent: Successfully navigated to home timeline.');
+    } else if (SEARCH_MODE === 'COMMUNITIES') {
+      if (!TARGET_COMMUNITY_URL) {
+        console.error('Finder Agent: SEARCH_MODE is COMMUNITIES, but TARGET_COMMUNITY_URL is not set. Please set it.');
+        process.exit(1);
+      }
+      console.log(`Finder Agent: SEARCH_MODE is COMMUNITIES. Navigating to target community URL: ${TARGET_COMMUNITY_URL}`);
+      await page.goto(TARGET_COMMUNITY_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      console.log('Finder Agent: Successfully navigated to target community page.');
+      // Wait for a bit for the community page/feed to load and settle.
+      await page.waitForTimeout(3000); // Wait 3 seconds for content to load
+    } else {
+      console.error(`Finder Agent: Invalid SEARCH_MODE "${SEARCH_MODE}". Exiting.`);
+      process.exit(1);
+    }
 
+    // The rest of the logic (scrolling, finding tweets, parsing, enqueuing) remains the same.
+    // It will operate on whatever page (home timeline or communities feed) is currently loaded.
+    console.log('Finder Agent: Proceeding with scrolling and tweet extraction...');
     await scrollPage(page, 3, 2500); // Scroll 3 times, 2.5s delay
 
     console.log(`Finder Agent: Looking for tweets with at least ${VIEW_THRESHOLD} views.`);
