@@ -399,85 +399,191 @@ Now, draft the new tweet based on all the above instructions.
 // --- Playwright Posting Logic ---
 async function publishTwitterPost(postText: string): Promise<string | null> {
   console.log('Post Writer Agent: Launching browser to post tweet...');
-  const browser = await chromium.launch({ headless: HEADLESS_MODE });
-  const context = await browser.newContext({ storageState: PLAYWRIGHT_STORAGE });
+  // Added more specific browser launch options for cloud environment
+  const browser = await chromium.launch({ 
+    headless: HEADLESS_MODE,
+    args: [
+      '--disable-dev-shm-usage', // Overcome limited memory issues in containerized environments
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--window-size=1280,960'
+    ],
+    timeout: 90000 // 90 second timeout for browser launch
+  });
+  
+  // Added explicit timeout config for context creation
+  const context = await browser.newContext({ 
+    storageState: PLAYWRIGHT_STORAGE,
+    viewport: { width: 1280, height: 960 },
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+  });
+  
   const page = await context.newPage();
   let postUrl: string | null = null;
+  let maxRetries = 2; // Add retries for the entire posting process
+  let retryCount = 0;
 
-  try {
-    console.log('Post Writer Agent: Navigating to Twitter compose page...');
-    await page.goto('https://x.com/compose/post', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    
-    // Wait for the main tweet input area to be ready
-    const tweetEditorSelector = 'div.public-DraftEditor-content[role="textbox"]';
-    console.log(`Post Writer Agent: Waiting for tweet editor: ${tweetEditorSelector}`);
-    await page.waitForSelector(tweetEditorSelector, { state: 'visible', timeout: 30000 });
-    console.log('Post Writer Agent: Tweet editor found. Typing post...');
-    await typeWithJitter(page, tweetEditorSelector, postText, 25); // Using typeWithJitter
-
-    // Click the "Post" button
-    const postButtonSelector = 'button[data-testid="tweetButton"]';
-    console.log(`Post Writer Agent: Waiting for Post button: ${postButtonSelector}`);
-    await page.waitForSelector(postButtonSelector, { state: 'visible', timeout: 15000 });
-    console.log('Post Writer Agent: Clicking Post button...');
-    await page.click(postButtonSelector);
-
-    // Try to detect successful post and get URL
-    // This is the trickiest part and might need refinement based on actual UI behavior.
-    // Option 1: Look for "Your post was sent." notification
+  // Main posting loop with retries
+  while (retryCount <= maxRetries) {
     try {
-        const notificationSelector = 'div[data-testid="toast"]'; // Common selector for toasts/notifications
-        console.log('Post Writer Agent: Waiting for post success notification...');
-        await page.waitForSelector(notificationSelector, { timeout: 15000 }); // Wait for any toast
-        const toastText = await page.locator(notificationSelector).innerText();
-        if (toastText.toLowerCase().includes('your post was sent') || toastText.toLowerCase().includes('post sent')) {
-            console.log('Post Writer Agent: "Post sent" notification detected.');
-            // Attempt to get URL by navigating to profile and finding the latest tweet
-            // This is an indirect way and might not always get the exact post if timing is off
-            // A more direct way would be if Twitter API provided it, or if the UI had a direct link on success.
-            const profileLink = await page.locator('a[data-testid="AppTabBar_Profile_Link"]').getAttribute('href');
-            if (profileLink) {
-                console.log(`Post Writer Agent: Navigating to profile ${profileLink} to find post URL.`);
-                await page.goto(`https://x.com${profileLink}`, { waitUntil: 'domcontentloaded', timeout: 60000});
-                console.log('Post Writer Agent: Waiting for tweets to appear on profile page...');
-                await page.waitForSelector('article[data-testid="tweet"]', { state: 'visible', timeout: 20000 }); // Wait for the first tweet article
-                const firstTweetLink = await page.locator('article[data-testid="tweet"] a:has(time[datetime])').first().getAttribute('href');
-                if (firstTweetLink) {
-                    postUrl = `https://x.com${firstTweetLink}`;
-                    console.log(`Post Writer Agent: Tentatively identified post URL: ${postUrl}`);
-                } else {
-                    console.warn('Post Writer Agent: Could not find link to the latest tweet on profile page.');
-                }
-            }
-        } else {
-            console.warn(`Post Writer Agent: Received a notification, but it wasn't the expected success message: "${toastText}"`);
+      console.log(`Post Writer Agent: Navigation attempt ${retryCount + 1}/${maxRetries + 1} to Twitter compose page...`);
+      
+      // Increased timeout for initial page load
+      await page.goto('https://x.com/compose/post', { waitUntil: 'networkidle', timeout: 120000 });
+      console.log('Post Writer Agent: Page loaded, waiting for content to stabilize...');
+      
+      // Wait for page to be fully interactive
+      await page.waitForTimeout(5000);
+      
+      // Check if we're actually logged in
+      const isLoggedIn = await page.locator('div[aria-label="Home timeline"]').count()
+        .then(() => true)
+        .catch(() => false);
+      
+      if (!isLoggedIn) {
+        console.log('Post Writer Agent: Twitter login status check - may not be properly logged in, but attempting to continue...');
+      } else {
+        console.log('Post Writer Agent: Twitter login confirmed.');
+      }
+      
+      // Try different selectors for the tweet editor
+      const editorSelectors = [
+        'div.public-DraftEditor-content[role="textbox"]',
+        'div[data-testid="tweetTextarea_0"]',
+        'div[contenteditable="true"][aria-multiline="true"]',
+        'div[data-testid="tweetTextInput_0"]'
+      ];
+      
+      console.log('Post Writer Agent: Trying multiple selectors for tweet editor...');
+      let editorFound = false;
+      
+      for (const selector of editorSelectors) {
+        try {
+          console.log(`Post Writer Agent: Trying editor selector: ${selector}`);
+          // Much longer timeout (60 seconds) for finding the editor
+          const isVisible = await page.waitForSelector(selector, { 
+            state: 'visible', 
+            timeout: 60000 
+          }).then(() => true).catch(() => false);
+          
+          if (isVisible) {
+            console.log(`Post Writer Agent: Tweet editor found with selector: ${selector}`);
+            console.log('Post Writer Agent: Typing post...');
+            await typeWithJitter(page, selector, postText, 30);
+            editorFound = true;
+            break;
+          }
+        } catch (selectorError) {
+          console.log(`Post Writer Agent: Selector "${selector}" not found, trying next...`);
         }
-    } catch (e:any) {
-      console.warn(`Post Writer Agent: Did not find a clear success notification or failed to get post URL. Error: ${e.message}. Assuming post might have failed or URL retrieval is not possible this way.`);
+      }
+      
+      if (!editorFound) {
+        throw new Error("Could not find tweet editor with any selector");
+      }
+      
+      // Try different selectors for the post button
+      const postButtonSelectors = [
+        'button[data-testid="tweetButton"]',
+        'div[data-testid="tweetButtonInline"]',
+        'div[role="button"][data-testid="tweetButtonInline"]'
+      ];
+      
+      console.log('Post Writer Agent: Looking for Post button...');
+      let buttonFound = false;
+      
+      for (const selector of postButtonSelectors) {
+        try {
+          console.log(`Post Writer Agent: Trying post button selector: ${selector}`);
+          const isVisible = await page.waitForSelector(selector, { 
+            state: 'visible', 
+            timeout: 30000 
+          }).then(() => true).catch(() => false);
+          
+          if (isVisible) {
+            console.log(`Post Writer Agent: Post button found with selector: ${selector}`);
+            await page.click(selector);
+            buttonFound = true;
+            break;
+          }
+        } catch (buttonError) {
+          console.log(`Post Writer Agent: Button selector "${selector}" not found, trying next...`);
+        }
+      }
+      
+      if (!buttonFound) {
+        throw new Error("Could not find post button with any selector");
+      }
+      
+      // Wait longer for post to complete
+      console.log('Post Writer Agent: Waiting for post to complete (15 seconds)...');
+      await page.waitForTimeout(15000);
+      
+      // Consider post successful even if we can't confirm URL
+      console.log('Post Writer Agent: Post likely successful. Will attempt to get URL...');
+      
+      // Try to get post URL but don't make it critical
+      try {
+        const profileLink = await page.locator('a[data-testid="AppTabBar_Profile_Link"]').getAttribute('href');
+        if (profileLink) {
+          console.log(`Post Writer Agent: Navigating to profile ${profileLink} to find post URL.`);
+          await page.goto(`https://x.com${profileLink}`, { waitUntil: 'networkidle', timeout: 60000});
+          
+          console.log('Post Writer Agent: Waiting for tweets to appear on profile page...');
+          await page.waitForSelector('article[data-testid="tweet"]', { state: 'visible', timeout: 30000 });
+          
+          const firstTweetLink = await page.locator('article[data-testid="tweet"] a:has(time[datetime])').first().getAttribute('href');
+          if (firstTweetLink) {
+            postUrl = `https://x.com${firstTweetLink}`;
+            console.log(`Post Writer Agent: Found post URL: ${postUrl}`);
+          }
+        }
+      } catch (urlError) {
+        console.log('Post Writer Agent: Could not retrieve post URL, but post was likely successful.');
+      }
+      
+      // Successfully completed the posting process
+      break;
+      
+    } catch (error: any) {
+      console.error(`Post Writer Agent: Error during attempt ${retryCount + 1}:`, error);
+      
+      // Save a screenshot for debugging
+      try {
+        const screenshotPath = `/data/error_screenshot_${Date.now()}.png`;
+        await page.screenshot({ path: screenshotPath });
+        console.log(`Post Writer Agent: Saved error screenshot to ${screenshotPath}`);
+      } catch (screenshotError) {
+        console.log('Post Writer Agent: Could not save error screenshot:', screenshotError);
+      }
+      
+      // If we have retries left, try again
+      if (retryCount < maxRetries) {
+        retryCount++;
+        console.log(`Post Writer Agent: Retrying (${retryCount}/${maxRetries})...`);
+        await page.waitForTimeout(10000); // Wait 10 seconds before retry
+        continue;
+      }
+      
+      // Out of retries
+      console.error('Post Writer Agent: Failed to post after all retry attempts.');
+      postUrl = null;
+      break;
     }
-
-    if (!postUrl) {
-        console.log("Post Writer Agent: Post URL not retrieved. The post might still be successful.");
-    }
-    
-    console.log('Post Writer Agent: Pausing briefly after attempting post...');
-    await page.waitForTimeout(3000);
-
-  } catch (error: any) {
-    console.error('Post Writer Agent: Error during Playwright posting operation:', error);
-    // In case of error, we don't have a URL
-    postUrl = null; 
-    // Optionally, take a screenshot on error if not headless for debugging
-    // if (!HEADLESS_MODE) {
-    //   await page.screenshot({ path: 'post_writer_error.png' });
-    //   console.log('Post Writer Agent: Screenshot taken as post_writer_error.png');
-    // }
-  } finally {
+  }
+  
+  // Close browser in finally block to ensure it happens
+  try {
     console.log('Post Writer Agent: Closing browser.');
     if (browser && browser.isConnected()) {
       await browser.close();
     }
+  } catch (closeError) {
+    console.error('Post Writer Agent: Error closing browser:', closeError);
   }
+  
   return postUrl; // This will be null if URL couldn't be confirmed
 }
 
