@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import fs from 'fs/promises';
 import path from 'path';
 import axios from 'axios'; // Added axios import for API calls
+import { createClient, SupabaseClient } from '@supabase/supabase-js'; // Supabase import
 
 // Load environment variables
 dotenv.config();
@@ -16,9 +17,10 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PLAYWRIGHT_STORAGE = process.env.PLAYWRIGHT_STORAGE || 'auth.json';
 const AUTH_JSON_BASE64 = process.env.AUTH_JSON_BASE64; // Added for Railway deployment
 const POST_WRITER_PERSONA_FILENAME = process.env.BRAIN_PERSONA_FILENAME || 'persona_2.md';
-const POST_WRITER_CSV_LOG_FILE = process.env.POST_WRITER_CSV_LOG_FILE || 'created_posts_log.csv'; // Default CSV log filename
 const HEADLESS_MODE = process.env.POST_WRITER_HEADLESS_MODE !== 'false'; // Default to true (headless)
 const TAVILY_API_KEY = process.env.TAVILY_API_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // --- Basic Validations ---
 if (!OPENAI_API_KEY) {
@@ -68,6 +70,14 @@ if (!TAVILY_API_KEY) {
   console.error('Post Writer Agent: Error - TAVILY_API_KEY is not defined in your .env file.');
   process.exit(1);
 }
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error('Post Writer Agent: Error - SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is not defined. Please set them in your .env file.');
+  process.exit(1);
+}
+
+// --- Supabase Client ---
+const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 // --- OpenAI Client ---
 const openai = new OpenAI({
@@ -123,63 +133,61 @@ async function loadPostWriterPersona(): Promise<void> {
   }
 }
 
-// --- CSV Log Handling ---
-const CSV_FILE_PATH = path.resolve(POST_WRITER_CSV_LOG_FILE);
-
+// --- Supabase Log Handling ---
 interface PostLogEntry {
-  timestamp: string;
-  postedText: string;
-  postUrl?: string;
+  timestamp: string; // Will be handled by Supabase default NOW()
+  posted_text: string; // Renamed from postedText for Supabase column convention
+  post_url?: string;    // Renamed from postUrl
   topic?: string;
+  status: 'pending' | 'posted' | 'failed' | 'generation_failed'; // Added status
+  error_message?: string; // Added error message
+  raw_openai_response?: object; // For JSONB
+  persona_alignment_check?: string;
 }
 
-async function loadPreviousPosts(): Promise<PostLogEntry[]> {
+async function loadPreviousPosts(): Promise<Pick<PostLogEntry, 'posted_text' | 'topic'>[]> {
   try {
-    await fs.access(CSV_FILE_PATH); // Check if file exists
-    const data = await fs.readFile(CSV_FILE_PATH, 'utf8');
-    const lines = data.split('\n').filter(line => line.trim() !== '');
-    if (lines.length <= 1) return []; // Only header or empty
+    const { data, error } = await supabase
+      .from('posts')
+      .select('posted_text, topic')
+      .order('timestamp', { ascending: false })
+      .limit(10); // Load last 10 posts for context
 
-    const posts: PostLogEntry[] = [];
-    const header = lines[0].split('","').map(h => h.replace(/^"|"$/g, ''));
-    const topicIndex = header.indexOf('topic');
-
-    for (let i = 1; i < lines.length; i++) {
-        // Basic CSV parsing, handles potential commas within quoted fields if not too complex
-        const values = lines[i].split('","').map(field => field.replace(/^"|"$/g, ''));
-        const timestamp = values[0];
-        const postedText = values[1];
-        const postUrl = values[2] || undefined; // Handle empty string for URL
-        const topic = topicIndex !== -1 && values[topicIndex] ? values[topicIndex] : undefined;
-
-        if (timestamp && postedText) {
-            posts.push({ timestamp, postedText, postUrl, topic });
-        }
-    }
-    console.log(`Post Writer Agent: Loaded ${posts.length} previous posts from ${CSV_FILE_PATH}.`);
-    return posts;
-  } catch (error:any) {
-    if (error.code === 'ENOENT') {
-      console.log(`Post Writer Agent: Log file ${CSV_FILE_PATH} not found. Assuming no previous posts.`);
-      // Create the file with headers including topic
-      await fs.writeFile(CSV_FILE_PATH, '"timestamp","postedText","postUrl","topic"\n');
-      console.log(`Post Writer Agent: Created log file ${CSV_FILE_PATH} with headers.`);
+    if (error) {
+      console.error('Post Writer Agent: Error loading previous posts from Supabase:', error);
       return [];
     }
-    console.error('Post Writer Agent: Error loading previous posts:', error);
+    console.log(`Post Writer Agent: Loaded ${data.length} previous posts from Supabase.`);
+    return data.map(p => ({ posted_text: p.posted_text || '', topic: p.topic }));
+  } catch (error) {
+    console.error('Post Writer Agent: Unexpected error loading previous posts from Supabase:', error);
     return [];
   }
 }
 
-async function appendPostToLog(newPost: PostLogEntry): Promise<void> {
-  // Ensure topic is an empty string if undefined, for consistent CSV structure
-  const topicForCsv = newPost.topic || ''; 
-  const csvLine = `"${newPost.timestamp}","${newPost.postedText.replace(/"/g, '""')}","${newPost.postUrl || ''}","${topicForCsv.replace(/"/g, '""')}"\n`;
+// Updated to log more details to Supabase
+async function appendPostToLog(newPostData: Omit<PostLogEntry, 'timestamp'>): Promise<void> {
   try {
-    await fs.appendFile(CSV_FILE_PATH, csvLine);
-    console.log(`Post Writer Agent: Successfully appended new post to ${CSV_FILE_PATH}`);
+    const { error } = await supabase.from('posts').insert([
+      {
+        posted_text: newPostData.posted_text,
+        post_url: newPostData.post_url,
+        topic: newPostData.topic,
+        status: newPostData.status,
+        error_message: newPostData.error_message,
+        raw_openai_response: newPostData.raw_openai_response,
+        persona_alignment_check: newPostData.persona_alignment_check,
+        // timestamp is handled by Supabase default
+      }
+    ]);
+
+    if (error) {
+      console.error('Post Writer Agent: Error appending post to Supabase log:', error);
+    } else {
+      console.log('Post Writer Agent: Successfully appended new post to Supabase log');
+    }
   } catch (error) {
-    console.error('Post Writer Agent: Error appending post to log:', error);
+    console.error('Post Writer Agent: Unexpected error appending post to Supabase log:', error);
   }
 }
 
@@ -190,10 +198,10 @@ interface TopicContextResult {
 }
 
 async function getUniqueTopicAndFreshContext(
-  previousTopics: (string | undefined)[]
+  previousPosts: Pick<PostLogEntry, 'posted_text' | 'topic'>[]
 ): Promise<TopicContextResult> {
   console.log('Post Writer Agent: Attempting to find a unique topic and fresh context...');
-  const recentTopicsToAvoid = previousTopics.slice(-7).filter(t => t !== undefined) as string[];
+  const recentTopicsToAvoid = previousPosts.map(p => p.topic).slice(-7).filter(t => t !== undefined) as string[];
   console.log('Post Writer Agent: Recent topics to avoid:', recentTopicsToAvoid);
 
   let attempts = 0;
@@ -280,7 +288,7 @@ async function getUniqueTopicAndFreshContext(
 }
 
 // --- OpenAI Content Generation ---
-async function generateNewPost(persona: string, previousPostTexts: string[], currentTopic: string, searchContext: string): Promise<{ tweet: string | null; generatedTopic: string | null }> {
+async function generateNewPost(persona: string, previousPostTexts: string[], currentTopic: string, searchContext: string): Promise<{ tweet: string | null; generatedTopic: string | null; rawOpenAIResponseForLog: object | null; personaAlignmentCheckForLog: string | null }> {
   console.log(`Post Writer Agent: Generating new post on topic "${currentTopic}" with OpenAI...`);
   let promptContent = `Your primary goal is to embody the following Twitter persona. Adhere to it strictly.
 --- PERSONA START ---
@@ -361,9 +369,9 @@ Now, draft the new tweet based on all the above instructions.
       const generatedTopicMatch = rawResponse.match(/Generated Topic:(.*?)Tweet:/is);
       const tweetMatch = rawResponse.match(/Tweet:(.*)/is);
 
-      let alignmentText = null;
-      let finalGeneratedTopic = null;
-      let newTweetText = null;
+      let alignmentText: string | null = null;
+      let finalGeneratedTopic: string | null = null;
+      let newTweetText: string | null = null;
 
       if (alignmentCheckMatch && alignmentCheckMatch[1]) {
         alignmentText = alignmentCheckMatch[1].trim();
@@ -378,21 +386,19 @@ Now, draft the new tweet based on all the above instructions.
         console.log(`Post Writer Agent: Extracted tweet: "${newTweetText}"`);
         if (newTweetText.toLowerCase().includes("error") || newTweetText.length < 10 || newTweetText.includes("?")) {
           console.warn("Post Writer Agent: OpenAI generated a very short, error-like, or question-containing tweet.");
-          return { tweet: null, generatedTopic: finalGeneratedTopic }; // Return topic even if tweet is bad for logging context
+          return { tweet: null, generatedTopic: finalGeneratedTopic, rawOpenAIResponseForLog: {response: rawResponse}, personaAlignmentCheckForLog: alignmentText };
         }
       } else {
         console.error('Post Writer Agent: Could not extract tweet from OpenAI response using "Tweet:" prefix.');
       }
-      // Return tweet and the topic OpenAI generated, even if tweet extraction failed but topic was found.
-      // This helps in debugging and deciding if the topic itself was problematic.
-      return { tweet: newTweetText, generatedTopic: finalGeneratedTopic }; 
+      return { tweet: newTweetText, generatedTopic: finalGeneratedTopic, rawOpenAIResponseForLog: {response: rawResponse}, personaAlignmentCheckForLog: alignmentText };
     } else {
       console.error('Post Writer Agent: OpenAI did not return valid content.');
-      return { tweet: null, generatedTopic: null };
+      return { tweet: null, generatedTopic: null, rawOpenAIResponseForLog: null, personaAlignmentCheckForLog: null };
     }
   } catch (error) {
     console.error('Post Writer Agent: Error calling OpenAI API:', error);
-    return { tweet: null, generatedTopic: null };
+    return { tweet: null, generatedTopic: null, rawOpenAIResponseForLog: null, personaAlignmentCheckForLog: null };
   }
 }
 
@@ -594,26 +600,41 @@ async function mainPostWriter() {
 
   await loadPostWriterPersona();
 
-  const previousPosts = await loadPreviousPosts();
-  const previousPostTexts = previousPosts.map(p => p.postedText);
-  const previousTopics = previousPosts.map(p => p.topic);
+  const previousPostsFromDb = await loadPreviousPosts();
+  // Pass only text and topic for unique topic generation context
+  const previousPostContext = previousPostsFromDb.map(p => ({ posted_text: p.posted_text, topic: p.topic }));
 
-  const { topic: currentTopic, searchContext } = await getUniqueTopicAndFreshContext(previousTopics);
+
+  const { topic: currentTopic, searchContext } = await getUniqueTopicAndFreshContext(previousPostContext);
 
   if (!currentTopic || !searchContext) {
     console.error('Post Writer Agent: Could not determine a unique topic or fetch search context. Exiting.');
+    // Log failure to Supabase
+    await appendPostToLog({
+      posted_text: 'TOPIC_GENERATION_FAILED',
+      status: 'failed',
+      topic: 'Unknown',
+      error_message: 'Could not determine a unique topic or fetch search context.'
+    });
     return;
   }
 
   let newPostText: string | null = null;
-  let finalGeneratedTopicForLog: string | null = null; // To store the topic confirmed by OpenAI
-  const maxRetries = 3; 
+  let finalGeneratedTopicForLog: string | null = null;
+  let rawOpenAIResponseForLog: object | null = null;
+  let personaAlignmentCheckForLog: string | null = null;
+  const maxRetries = 3;
 
   for (let i = 0; i < maxRetries; i++) {
     console.log(`Post Writer Agent: Attempt ${i + 1} to generate a new post on topic: "${currentTopic}".`);
-    const generationResult = await generateNewPost(postWriterPersonaContent, previousPostTexts, currentTopic, searchContext);
+    // Ensure previousPostTexts is an array of strings for generateNewPost
+    const previousPostTextsOnly = previousPostContext.map(p => p.posted_text || '');
+    const generationResult = await generateNewPost(postWriterPersonaContent, previousPostTextsOnly, currentTopic, searchContext);
+    
     newPostText = generationResult.tweet;
-    finalGeneratedTopicForLog = generationResult.generatedTopic || currentTopic; // Fallback to originally selected topic if AI doesn't specify one
+    finalGeneratedTopicForLog = generationResult.generatedTopic || currentTopic;
+    rawOpenAIResponseForLog = generationResult.rawOpenAIResponseForLog;
+    personaAlignmentCheckForLog = generationResult.personaAlignmentCheckForLog;
 
     if (newPostText) {
       console.log(`Post Writer Agent: Successfully generated post content: "${newPostText}" with topic "${finalGeneratedTopicForLog}"`);
@@ -627,34 +648,33 @@ async function mainPostWriter() {
 
   if (!newPostText) {
     console.error(`Post Writer Agent: Failed to generate new post content for topic "${finalGeneratedTopicForLog || currentTopic}" after multiple attempts. Exiting.`);
-    // Still log the attempt with the topic, even if post generation failed, to avoid retrying this topic soon if it was problematic
-    if (finalGeneratedTopicForLog || currentTopic) { // Ensure we have some topic to log
-        const logEntry: PostLogEntry = {
-            timestamp: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Jerusalem' }),
-            postedText: "GENERATION FAILED",
-            postUrl: undefined,
-            topic: finalGeneratedTopicForLog === null ? undefined : finalGeneratedTopicForLog, 
-        };
-        await appendPostToLog(logEntry);
-        console.log(`Post Writer Agent: Logged failed generation attempt for topic: "${finalGeneratedTopicForLog || currentTopic}"`);
-    }
+    await appendPostToLog({
+      posted_text: 'GENERATION_FAILED',
+      topic: finalGeneratedTopicForLog || currentTopic,
+      status: 'generation_failed',
+      error_message: 'Failed to generate post content after multiple attempts.',
+      raw_openai_response: rawOpenAIResponseForLog === null ? undefined : rawOpenAIResponseForLog,
+      persona_alignment_check: personaAlignmentCheckForLog === null ? undefined : personaAlignmentCheckForLog
+    });
     return;
   }
 
   const postedTweetUrl = await publishTwitterPost(newPostText);
 
-  const logEntry: PostLogEntry = {
-    timestamp: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Jerusalem' }),
-    postedText: newPostText,
-    postUrl: postedTweetUrl || undefined,
-    topic: finalGeneratedTopicForLog === null ? undefined : finalGeneratedTopicForLog, // Convert null to undefined for CSV logging
-  };
-  await appendPostToLog(logEntry);
+  await appendPostToLog({
+    posted_text: newPostText,
+    post_url: postedTweetUrl || undefined,
+    topic: finalGeneratedTopicForLog || undefined,
+    status: postedTweetUrl ? 'posted' : 'failed',
+    error_message: postedTweetUrl ? undefined : 'Failed to publish tweet or retrieve URL.',
+    raw_openai_response: rawOpenAIResponseForLog === null ? undefined : rawOpenAIResponseForLog,
+    persona_alignment_check: personaAlignmentCheckForLog === null ? undefined : personaAlignmentCheckForLog
+  });
 
   if (postedTweetUrl) {
     console.log(`Post Writer Agent: Post published successfully. URL: ${postedTweetUrl}`);
   } else {
-    console.log('Post Writer Agent: Post published but URL not retrieved.');
+    console.log('Post Writer Agent: Post published but URL not retrieved, or posting failed.');
   }
 }
 

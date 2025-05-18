@@ -11,7 +11,8 @@
     "post-writer": "ts-node src/post_writer.ts",
     "postinstall": "npx playwright install --with-deps chromium",
     "start": "ts-node src/post_writer.ts",
-    "scheduled-poster": "ts-node src/scheduled_poster.ts"
+    "scheduled-poster": "ts-node src/scheduled_poster.ts",
+    "migrate-csv": "ts-node src/migrate_csv_to_supabase.ts"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +20,7 @@
   "description": "",
   "dependencies": {
     "@faker-js/faker": "^8.4.1",
+    "@supabase/supabase-js": "^2.49.4",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.15.18",
     "@typescript-eslint/eslint-plugin": "^8.32.1",
@@ -26,6 +28,7 @@
     "axios": "^1.9.0",
     "bullmq": "^5.1.5",
     "concurrently": "^8.2.2",
+    "csv-parse": "^5.6.0",
     "dotenv": "^16.3.1",
     "eslint-config-prettier": "^9.1.0",
     "fastify": "^5.3.3",
