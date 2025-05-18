@@ -658,4 +658,10 @@ async function mainPostWriter() {
   }
 }
 
-mainPostWriter();
+// Call the function when this file is executed directly
+if (require.main === module) {
+  mainPostWriter();
+}
+
+// Export the main function as default export
+export default mainPostWriter;
