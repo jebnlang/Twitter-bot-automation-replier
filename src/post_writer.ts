@@ -106,37 +106,45 @@ async function appendPostToLog(newPost: PostLogEntry): Promise<void> {
 // --- OpenAI Content Generation ---
 async function generateNewPost(persona: string, previousPostTexts: string[]): Promise<string | null> {
   console.log('Post Writer Agent: Generating new post content with OpenAI...');
-  let promptContent = `You are a creative content writer for Twitter. Your persona is:
+  let promptContent = `Your primary goal is to embody the following Twitter persona. Adhere to it strictly.
 --- PERSONA START ---
 ${persona}
 --- PERSONA END ---
 
-You need to draft a new, original tweet. Make it engaging and relevant to your persona.
+Based on this persona, you need to draft a new, original tweet. The tweet should be insightful, valuable, and sound human—like an experienced builder sharing knowledge, not a marketing department.
 
-IMPORTANT: Avoid creating a tweet that is too similar in topic or phrasing to any of the following previously posted tweets. Be fresh and unique!
+Key rules to follow for THIS TWEET:
+1.  DO NOT ask any questions, especially at the end of the tweet. No exceptions.
+2.  DO NOT use hashtags.
+3.  DO NOT use em dashes (—).
+4.  AVOID marketing hype, overly enthusiastic language, or corporate-sounding phrases. Focus on authenticity and genuine insight.
+5.  Ensure the tweet is fresh and unique, and not too similar in topic or phrasing to the previously posted tweets listed below.
+6.  DO NOT mention Teleprompt or its features in this tweet. The product description in the persona is only context, not content.
+7.  Maximize readability with short, punchy sentences and **ensure you use double line breaks (\\n\\n) between paragraphs or distinct ideas to create visual spacing, similar to the provided example image.**
+8.  **AIM FOR A LENGTH OF AROUND 600 CHARACTERS (approximately 3-5 substantial paragraphs) to provide in-depth, insightful, and educational content.**
+
 `;
 
   if (previousPostTexts.length > 0) {
-    promptContent += '\n--- PREVIOUSLY POSTED TWEETS (for reference to avoid similarity) ---';
-    // Include a limited number of recent posts to keep the prompt manageable
-    const recentPosts = previousPostTexts.slice(-5); // e.g., last 5 posts
+    promptContent += '\n--- PREVIOUSLY POSTED TWEETS (for reference to avoid similarity and to ensure new content is distinct) ---';
+    const recentPosts = previousPostTexts.slice(-5); 
     recentPosts.forEach((text, index) => {
       promptContent += `\n${index + 1}. "${text}"`;
     });
     promptContent += '\n--- END PREVIOUSLY POSTED TWEETS ---';
   }
-  promptContent += '\n\nDraft your new tweet now:';
+  promptContent += '\n\nNow, draft the new tweet based on all the above instructions. Remember: NO QUESTIONS AT THE END.';
 
   try {
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: [
-        { role: 'system', content: "You are helping to draft a tweet based on a persona and a list of previous tweets to ensure originality." },
+        { role: 'system', content: "You are an AI assistant strictly following a detailed persona and set of rules to draft a unique, insightful, and well-structured Twitter post of approximately 600 characters. Your main job is to adhere to all constraints, especially regarding tone, style, length, paragraph structure (double line breaks), providing a persona alignment check, and avoiding questions." },
         { role: 'user', content: promptContent },
       ],
-      max_tokens: 70, // Twitter's 280 chars is roughly 70 tokens
-      temperature: 0.75, // Slightly higher for more creativity
-      n: 1, // Generate one candidate
+      max_tokens: 350, // Increased for longer posts (1000 chars ~ 250 tokens + alignment check)
+      temperature: 0.7, 
+      n: 1,
     });
 
     if (completion.choices && completion.choices[0].message && completion.choices[0].message.content) {
@@ -280,7 +288,7 @@ async function mainPostWriter() {
   // Log to CSV, even if URL wasn't retrieved, to record the attempt and text
   // We only log if newPostText is not null, implying an attempt was made to generate/post it.
   const logEntry: PostLogEntry = {
-    timestamp: new Date().toISOString(),
+    timestamp: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Jerusalem' }),
     postedText: newPostText,
     postUrl: postedTweetUrl || undefined, // Store undefined if null
   };
