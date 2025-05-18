@@ -8,7 +8,8 @@
     "test": "jest",
     "e2e": "playwright test",
     "build": "tsc",
-    "post-writer": "ts-node src/post_writer.ts"
+    "post-writer": "ts-node src/post_writer.ts",
+    "postinstall": "npx playwright install --with-deps chromium"
   },
   "keywords": [],
   "author": "",

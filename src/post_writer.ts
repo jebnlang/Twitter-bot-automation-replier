@@ -14,6 +14,7 @@ chromium.use(stealth());
 // --- Environment Variables ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PLAYWRIGHT_STORAGE = process.env.PLAYWRIGHT_STORAGE || 'auth.json';
+const AUTH_JSON_BASE64 = process.env.AUTH_JSON_BASE64; // Added for Railway deployment
 const POST_WRITER_PERSONA_FILENAME = process.env.BRAIN_PERSONA_FILENAME || 'persona_2.md';
 const POST_WRITER_CSV_LOG_FILE = process.env.POST_WRITER_CSV_LOG_FILE || 'created_posts_log.csv'; // Default CSV log filename
 const HEADLESS_MODE = process.env.POST_WRITER_HEADLESS_MODE !== 'false'; // Default to true (headless)
@@ -24,10 +25,45 @@ if (!OPENAI_API_KEY) {
   console.error('Post Writer Agent: Error - OPENAI_API_KEY is not defined. Please set it in your .env file.');
   process.exit(1);
 }
-if (!PLAYWRIGHT_STORAGE || !(require('fs')).existsSync(PLAYWRIGHT_STORAGE)) { // Synchronous check for startup
-    console.error(`Post Writer Agent: Error - PLAYWRIGHT_STORAGE path ("${PLAYWRIGHT_STORAGE}") is not defined or auth.json does not exist. Please run authentication.`);
-    process.exit(1);
+
+// Validating PLAYWRIGHT_STORAGE and attempting to hydrate auth.json from AUTH_JSON_BASE64 if needed
+if (!PLAYWRIGHT_STORAGE) {
+  console.error('Post Writer Agent: Error - PLAYWRIGHT_STORAGE path is not defined. Please set it in your .env file.');
+  process.exit(1);
+} else {
+  // We need 'fs' for synchronous operations here during startup, and 'path' for resolving.
+  // These are already imported (fs from 'fs/promises', path from 'path'), but for this sync block, we use require.
+  const fsSync = require('fs');
+  const pathUtil = require('path'); // Using pathUtil to avoid conflict if path was destructured from import
+  const authFilePath = pathUtil.resolve(PLAYWRIGHT_STORAGE);
+
+  if (!fsSync.existsSync(authFilePath)) {
+    console.log(`Post Writer Agent: auth.json not found at ${authFilePath}. Attempting to create from AUTH_JSON_BASE64 env var.`);
+    if (AUTH_JSON_BASE64 && AUTH_JSON_BASE64.trim() !== '') {
+      try {
+        const authFileDir = pathUtil.dirname(authFilePath);
+        if (!fsSync.existsSync(authFileDir)) {
+          fsSync.mkdirSync(authFileDir, { recursive: true });
+          console.log(`Post Writer Agent: Created directory ${authFileDir} for auth.json.`);
+        }
+        const decodedAuthJson = Buffer.from(AUTH_JSON_BASE64, 'base64').toString('utf-8');
+        fsSync.writeFileSync(authFilePath, decodedAuthJson);
+        console.log(`Post Writer Agent: Successfully created auth.json at ${authFilePath} from AUTH_JSON_BASE64.`);
+      } catch (e: any) {
+        console.error(`Post Writer Agent: Fatal error creating auth.json from AUTH_JSON_BASE64: ${e.message}`);
+        console.error('Post Writer Agent: Please ensure AUTH_JSON_BASE64 is a valid base64 encoded string and the path is writable.');
+        process.exit(1);
+      }
+    } else {
+      console.error(`Post Writer Agent: Error - auth.json not found at ${authFilePath} and AUTH_JSON_BASE64 environment variable is not set or is empty.`);
+      console.error('Post Writer Agent: Cannot proceed without authentication details. Please run authentication locally and provide AUTH_JSON_BASE64, or ensure the file is present if not using the environment variable.');
+      process.exit(1);
+    }
+  } else {
+    console.log(`Post Writer Agent: Using existing auth.json found at ${authFilePath}.`);
+  }
 }
+
 if (!TAVILY_API_KEY) {
   console.error('Post Writer Agent: Error - TAVILY_API_KEY is not defined in your .env file.');
   process.exit(1);
