@@ -9,7 +9,8 @@
     "e2e": "playwright test",
     "build": "tsc",
     "post-writer": "ts-node src/post_writer.ts",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "postinstall": "npx playwright install --with-deps chromium",
+    "start": "ts-node src/post_writer.ts"
   },
   "keywords": [],
   "author": "",
