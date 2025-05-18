@@ -69,12 +69,34 @@ function checkIfShouldPost(): boolean {
     
     // Get the latest post's timestamp from the last line
     const lastLine = lines[lines.length - 1];
-    // Simple CSV parsing - extract first value which is the timestamp
-    const lastPostTimeStr = lastLine.split(',')[0].replace(/^"|"$/g, '');
-    const lastPostTime = new Date(lastPostTimeStr);
+    
+    // More robust CSV parsing for quoted fields
+    // This regex matches the first field in a CSV line that might contain quoted content
+    const csvFieldRegex = /^"([^"]*)"/;
+    const match = lastLine.match(csvFieldRegex);
+    
+    if (!match || !match[1]) {
+      console.error('Scheduled Poster: Could not extract timestamp from CSV. Defaulting to posting.');
+      return true;
+    }
+    
+    const lastPostTimeStr = match[1];
+    console.log(`Scheduled Poster: Extracted timestamp: "${lastPostTimeStr}"`);
+    
+    // Try to parse the timestamp - handle different possible formats
+    let lastPostTime: Date;
+    
+    if (lastPostTimeStr.includes('T')) {
+      // ISO format like "2025-05-17T12:38:55.125Z"
+      lastPostTime = new Date(lastPostTimeStr);
+    } else {
+      // Local format like "2025-05-17 22:10:20"
+      // Convert to ISO-like format for parsing
+      lastPostTime = new Date(lastPostTimeStr.replace(' ', 'T'));
+    }
     
     if (isNaN(lastPostTime.getTime())) {
-      console.error('Scheduled Poster: Could not parse timestamp from CSV. Defaulting to posting.');
+      console.error(`Scheduled Poster: Could not parse timestamp "${lastPostTimeStr}". Defaulting to posting.`);
       return true;
     }
     
