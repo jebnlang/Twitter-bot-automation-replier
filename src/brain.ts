@@ -114,7 +114,7 @@ async function processTweetJob(job: Job<any, any, string>) {
         { role: 'system', content: personaContent },
         {
           role: 'user',
-          content: `Tweet to reply to:\n"""\n${fullTweetContent}\n"""\n\nDraft your reply based on the persona provided in the system message.`,
+          content: `Tweet to reply to:\n"""\n${fullTweetContent}\n"""\n\nDraft your reply based on the persona provided in the system message. If the tweet is sharing knowledge (like a course, tutorial, or educational content), keep the reply very short and concise - just thank them for sharing and add a brief, relevant opinion. Otherwise, follow the normal persona guidelines.`,
         },
       ],
       max_tokens: 70, // Approx 280 chars, good for Twitter replies
