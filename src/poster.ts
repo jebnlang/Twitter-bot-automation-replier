@@ -113,6 +113,56 @@ async function processApprovedTweetJob(job: Job) {
     console.log('Poster Agent: Pausing for 5 seconds for initial manual inspection (headless:false)...');
     await page.waitForTimeout(5000); // 5-second pause
 
+    // NEW STEP: Like the tweet before replying - with better error handling
+    try {
+      console.log('Poster Agent: Attempting to like the tweet...');
+      
+      // Try multiple selectors to find the like button
+      let likeButtonFound = false;
+      
+      // First try data-testid approach
+      try {
+        const likeButtonSelector = 'div[data-testid="like"]';
+        console.log(`Poster Agent: Looking for like button with selector: ${likeButtonSelector}`);
+        const isVisible = await page.isVisible(likeButtonSelector, { timeout: 5000 });
+        
+        if (isVisible) {
+          await page.click(likeButtonSelector);
+          likeButtonFound = true;
+          console.log('Poster Agent: Clicked like button using data-testid.');
+        }
+      } catch (err) {
+        console.log('Poster Agent: Could not find like button with data-testid selector. Trying alternative method.');
+      }
+      
+      // If first method failed, try finding heart icon by aria-label
+      if (!likeButtonFound) {
+        try {
+          // Look for the heart icon by its aria-label
+          const heartIconSelector = '[aria-label*="Like"], [aria-label*="like"]';
+          console.log(`Poster Agent: Looking for like button with heart icon selector: ${heartIconSelector}`);
+          const isVisible = await page.isVisible(heartIconSelector, { timeout: 5000 });
+          
+          if (isVisible) {
+            await page.click(heartIconSelector);
+            likeButtonFound = true;
+            console.log('Poster Agent: Clicked like button using heart icon selector.');
+          }
+        } catch (err) {
+          console.log('Poster Agent: Could not find like button with heart icon selector either.');
+        }
+      }
+      
+      if (likeButtonFound) {
+        // Small pause after liking
+        await page.waitForTimeout(1000);
+      } else {
+        console.log('Poster Agent: Could not find and click the like button. Continuing with reply anyway.');
+      }
+    } catch (likeError: any) {
+      console.log(`Poster Agent: Error while trying to like the tweet: ${likeError.message}. Continuing with reply.`);
+    }
+
     // 1. Click the initial reply icon (speech bubble) to open the reply modal
     const initialReplyIconSelector = 'button[data-testid="reply"]'; // Target the button with this testid
     console.log(`Poster Agent: Looking for initial reply icon (button) with selector: ${initialReplyIconSelector}`);
