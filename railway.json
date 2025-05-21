@@ -5,8 +5,13 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
-    "startCommand": "node cron-wrapper.js",
+    "startCommand": "echo 'Service is running in cron-only mode. See the cron section for job details.'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
+  },
+  "cron": {
+    "schedule": "0 */1 * * *",
+    "command": "npm run reply-job",
+    "timezone": "UTC"
   }
 } 

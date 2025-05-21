@@ -4,9 +4,14 @@ import OpenAI from 'openai';
 import fs from 'fs/promises';
 import path from 'path';
 import Redis from 'ioredis';
+import { parseCommandLineArgs, logCommandLineArgs } from './cmd-utils';
 
 // Load environment variables
 dotenv.config();
+
+// Parse command line args
+const cmdArgs = parseCommandLineArgs();
+logCommandLineArgs('Brain Agent', cmdArgs);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const REDIS_URL = process.env.REDIS_URL;
@@ -54,6 +59,11 @@ const redisConnectionOptions = {
 
 // Queue to consume tweets from (populated by Finder)
 const tweetsQueueName = 'tweets';
+
+// Get queue instance for checking counts
+const tweetsQueue = new Queue(tweetsQueueName, {
+  connection: redisConnectionOptions,
+});
 
 // Queue to send tweets with drafted replies to (consumed by Poster)
 const approvedTweetsQueueName = 'tweets-approved';
@@ -153,6 +163,7 @@ async function startBrainAgent() {
   await loadPersona(); // Load persona before starting worker
 
   console.log(`Brain Agent: Starting worker, listening to queue: "${tweetsQueueName}"`);
+  
   const worker = new Worker(tweetsQueueName, processTweetJob, {
     connection: redisConnectionOptions,
     concurrency: 5, // Process up to 5 jobs concurrently
@@ -168,9 +179,41 @@ async function startBrainAgent() {
     console.error(`Brain Agent: Job ID ${job?.id} failed with error:`, err.message);
   });
 
+  // If processAll flag is set, wait for all jobs to be processed
+  if (cmdArgs.processAll) {
+    console.log('Brain Agent: --process-all flag set, will process all jobs then exit');
+    
+    // Check queue size every second
+    const checkInterval = setInterval(async () => {
+      try {
+        const waitingCount = await tweetsQueue.getWaitingCount();
+        const activeCount = await tweetsQueue.getActiveCount();
+        const totalRemaining = waitingCount + activeCount;
+        
+        console.log(`Brain Agent: Queue status - ${waitingCount} waiting, ${activeCount} active`);
+        
+        if (totalRemaining === 0) {
+          console.log('Brain Agent: Queue empty, all jobs processed');
+          clearInterval(checkInterval);
+          
+          if (cmdArgs.exitWhenDone) {
+            console.log('Brain Agent: --exit-when-done flag set, closing worker and exiting');
+            await worker.close();
+            await redisClient.quit();
+            process.exit(0);
+          }
+        }
+      } catch (error) {
+        console.error('Brain Agent: Error checking queue status:', error);
+      }
+    }, 1000);
+  }
+
+  // Standard signal handlers
   process.on('SIGINT', async () => {
     console.log('Brain Agent: SIGINT received, shutting down worker...');
     await worker.close();
+    await redisClient.quit();
     console.log('Brain Agent: Worker shut down.');
     process.exit(0);
   });
@@ -178,6 +221,7 @@ async function startBrainAgent() {
   process.on('SIGTERM', async () => {
     console.log('Brain Agent: SIGTERM received, shutting down worker...');
     await worker.close();
+    await redisClient.quit();
     console.log('Brain Agent: Worker shut down.');
     process.exit(0);
   });

@@ -6,9 +6,14 @@ import stealth from 'puppeteer-extra-plugin-stealth';
 import path from 'path'; // For resolving PLAYWRIGHT_STORAGE
 // import readline from 'readline'; // readline is no longer used
 import Redis from 'ioredis'; // Import IORedis
+import { parseCommandLineArgs, logCommandLineArgs } from './cmd-utils';
 
 // Load environment variables
 dotenv.config();
+
+// Parse command line args
+const cmdArgs = parseCommandLineArgs();
+logCommandLineArgs('Poster Agent', cmdArgs);
 
 // Apply the stealth plugin
 chromium.use(stealth());
@@ -42,6 +47,11 @@ const redisConnectionOptions = {
 };
 
 const approvedTweetsQueueName = 'tweets-approved'; // Must match what Brain agent uses
+
+// Get queue instance for checking counts
+const approvedTweetsQueue = new Queue(approvedTweetsQueueName, {
+  connection: redisConnectionOptions,
+});
 
 // Queue for sending log entries
 const logEntryQueueName = 'logEntryQueue'; // Must match Logger agent
@@ -261,7 +271,7 @@ async function startPosterAgent() {
     logEntryQueue = new Queue(logEntryQueueName, { connection: redisConnectionOptions });
   }
   console.log(`Poster Agent: Starting worker, listening to queue: "${approvedTweetsQueueName}"`);
-  // ... (rest of worker initialization remains the same) ...
+  
   const worker = new Worker(approvedTweetsQueueName, processApprovedTweetJob, {
     connection: redisConnectionOptions,
     limiter: {
@@ -287,6 +297,41 @@ async function startPosterAgent() {
   });
 
   console.log('Poster Agent: Worker started.');
+  
+  // If processAll flag is set, wait for all jobs to be processed
+  if (cmdArgs.processAll) {
+    console.log('Poster Agent: --process-all flag set, will process all jobs then exit');
+    
+    // Check queue size every second
+    const checkInterval = setInterval(async () => {
+      try {
+        const waitingCount = await approvedTweetsQueue.getWaitingCount();
+        const activeCount = await approvedTweetsQueue.getActiveCount();
+        const totalRemaining = waitingCount + activeCount;
+        
+        console.log(`Poster Agent: Queue status - ${waitingCount} waiting, ${activeCount} active`);
+        
+        if (totalRemaining === 0) {
+          console.log('Poster Agent: Queue empty, all jobs processed');
+          clearInterval(checkInterval);
+          
+          if (cmdArgs.exitWhenDone) {
+            console.log('Poster Agent: --exit-when-done flag set, closing worker and exiting');
+            await worker.close();
+            if (logEntryQueue) {
+              await logEntryQueue.close();
+            }
+            if (redisClientPoster && typeof redisClientPoster.quit === 'function') {
+              await redisClientPoster.quit();
+            }
+            process.exit(0);
+          }
+        }
+      } catch (error) {
+        console.error('Poster Agent: Error checking queue status:', error);
+      }
+    }, 1000);
+  }
 
   const gracefulShutdown = async () => {
     console.log('Poster Agent: SIGINT/SIGTERM received, shutting down worker and queue...');

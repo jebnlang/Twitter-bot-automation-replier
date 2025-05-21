@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import dotenv from 'dotenv';
 import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { parseCommandLineArgs, logCommandLineArgs } from './cmd-utils';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -11,6 +12,10 @@ dotenv.config();
 // DEBUG: Check if .env variables are loaded
 console.log('Finder Agent DEBUG: SUPABASE_URL from env:', process.env.SUPABASE_URL);
 console.log('Finder Agent DEBUG: SUPABASE_ANON_KEY from env:', process.env.SUPABASE_ANON_KEY);
+
+// Parse command line args
+const cmdArgs = parseCommandLineArgs();
+logCommandLineArgs('Finder Agent', cmdArgs);
 
 // Apply the stealth plugin to Playwright Chromium
 chromium.use(stealth());
@@ -22,7 +27,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
 // Search and Interaction Configuration
 const VIEW_THRESHOLD = parseInt(process.env.VIEW_THRESHOLD || '1500', 10);
-const MAX_REPLIES_PER_RUN = parseInt(process.env.MAX_REPLIES_PER_RUN || '3', 10);
+const MAX_REPLIES_PER_RUN = cmdArgs.maxReplies;
 const FINDER_SEARCH_MIN_FAVES = parseInt(process.env.FINDER_SEARCH_MIN_FAVES || '25', 10);
 
 // Redis and Playwright Configuration
@@ -303,4 +308,9 @@ async function main() {
 main().catch(error => {
   console.error('Finder Agent: Unhandled error in main execution:', error);
   process.exit(1);
+}).finally(() => {
+  if (cmdArgs.exitWhenDone) {
+    console.log('Finder Agent: --exit-when-done flag set, exiting process');
+    process.exit(0);
+  }
 });
