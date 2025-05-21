@@ -1,9 +1,6 @@
 # Dependencies
 node_modules/
 
-# Compiled TypeScript output
-dist/
-
 # Environment variables files
 .env
 *.env.local
