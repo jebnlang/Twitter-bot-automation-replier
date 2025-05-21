@@ -5,7 +5,7 @@ import { promisify } from 'util';
 // Load environment variables
 dotenv.config();
 
-const execPromise = promisify(exec);
+// const execPromise = promisify(exec); // We'll use the callback version for better error logging
 
 // Get configuration from environment variables
 // Default to 3 replies per run if not specified
@@ -15,17 +15,27 @@ console.log(`Reply Job: Starting with MAX_REPLIES_PER_RUN=${MAX_REPLIES_PER_RUN}
 
 // Helper to run a command and log output
 async function runCommand(command: string): Promise<void> {
-  console.log(`Reply Job: Running command: ${command}`);
-  try {
-    const { stdout, stderr } = await execPromise(command);
-    if (stdout) console.log(`Command output:\n${stdout}`);
-    if (stderr) console.error(`Command error output:\n${stderr}`);
-  } catch (error: any) {
-    console.error(`Reply Job: Error executing command: ${error.message}`);
-    if (error.stdout) console.log(`Command output:\n${error.stdout}`);
-    if (error.stderr) console.error(`Command error output:\n${error.stderr}`);
-    throw error; // Re-throw to handle in the main flow
-  }
+  return new Promise((resolve, reject) => {
+    console.log(`Reply Job: Running command: ${command}`);
+    const process = exec(command, (error, stdout, stderr) => {
+      if (stdout) {
+        console.log(`[Command Output - ${command}]\n${stdout}`);
+      }
+      if (stderr) {
+        console.error(`[Command Stderr - ${command}]\n${stderr}`);
+      }
+      if (error) {
+        console.error(`[Command Error - ${command}] Execution failed:`, error);
+        reject(error); // Reject the promise if exec returns an error
+      } else {
+        resolve(); // Resolve the promise on successful execution
+      }
+    });
+
+    process.on('exit', (code, signal) => {
+        console.log(`[Command Exit - ${command}] Process exited with code ${code} and signal ${signal}`);
+    });
+  });
 }
 
 // Main job function
@@ -49,13 +59,13 @@ async function runReplyJob() {
 
     console.log('Reply Job: Completed successfully');
   } catch (error) {
-    console.error('Reply Job: Failed with error:', error);
+    console.error('Reply Job: Failed with an error during one of the steps.'); // More generic error here as specific errors are logged by runCommand
     process.exit(1);
   }
 
   // Give time for any async operations to complete
   setTimeout(() => {
-    console.log('Reply Job: Exiting process');
+    console.log('Reply Job: Exiting process after successful run or caught error in runCommand.');
     process.exit(0);
   }, 2000);
 }
