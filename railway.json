@@ -5,7 +5,7 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
-    "startCommand": "echo 'Service is running in cron-only mode. See the cron section for job details.'",
+    "startCommand": "npm run reply-job",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }
