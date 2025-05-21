@@ -9,7 +9,12 @@ dotenv.config();
 // Default to 3 replies per run if not specified
 const MAX_REPLIES_PER_RUN = parseInt(process.env.MAX_REPLIES_PER_RUN || '3', 10);
 
-console.log(`Reply Job: Starting with MAX_REPLIES_PER_RUN=${MAX_REPLIES_PER_RUN}`);
+// Determine if we're in production (Railway) or development environment
+const isProd = process.env.RAILWAY_STATIC_URL || process.env.RAILWAY_SERVICE_NAME;
+const scriptPrefix = isProd ? 'node dist/' : 'ts-node src/';
+const scriptExtension = isProd ? '.js' : '.ts';
+
+console.log(`Reply Job: Starting with MAX_REPLIES_PER_RUN=${MAX_REPLIES_PER_RUN} in ${isProd ? 'production' : 'development'} mode`);
 
 // Helper to run a command and log output
 async function runCommand(command: string): Promise<void> {
@@ -41,19 +46,19 @@ async function runReplyJob() {
   try {
     // Step 1: Clear any previous queues to start fresh
     console.log('Reply Job: Clearing previous queues...');
-    await runCommand('node dist/clear-queues.js');
+    await runCommand(`${scriptPrefix}clear-queues${scriptExtension}`);
 
     // Step 2: Run the finder to identify tweets to reply to
     console.log('Reply Job: Running finder to identify tweets...');
-    await runCommand(`node dist/finder.js --max-replies=${MAX_REPLIES_PER_RUN} --exit-when-done=true`);
+    await runCommand(`${scriptPrefix}finder${scriptExtension} --max-replies=${MAX_REPLIES_PER_RUN} --exit-when-done=true`);
 
     // Step 3: Run the brain to generate replies for identified tweets
     console.log('Reply Job: Running brain to generate replies...');
-    await runCommand('node dist/brain.js --process-all --exit-when-done=true');
+    await runCommand(`${scriptPrefix}brain${scriptExtension} --process-all --exit-when-done=true`);
 
     // Step 4: Run the poster to post the approved replies
     console.log('Reply Job: Running poster to post replies...');
-    await runCommand('node dist/poster.js --process-all --exit-when-done=true');
+    await runCommand(`${scriptPrefix}poster${scriptExtension} --process-all --exit-when-done=true`);
 
     console.log('Reply Job: Completed successfully');
   } catch (error) {
