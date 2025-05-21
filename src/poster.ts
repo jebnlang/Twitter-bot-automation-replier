@@ -32,7 +32,8 @@ if (!REDIS_URL) {
 // Initialize Redis Client for adding to replied set
 const redisClientPoster = new Redis(REDIS_URL, {
   maxRetriesPerRequest: null,
-  enableReadyCheck: false
+  enableReadyCheck: false,
+  family: 0
 });
 const REPLIED_TWEETS_SET_KEY_POSTER = 'replied_tweet_urls'; // Ensure this matches Brain's key
 
@@ -44,6 +45,7 @@ const redisConnectionOptions = {
   port: parseInt(new URL(REDIS_URL).port, 10),
   password: new URL(REDIS_URL).password ? decodeURIComponent(new URL(REDIS_URL).password) : undefined,
   db: new URL(REDIS_URL).pathname ? parseInt(new URL(REDIS_URL).pathname.substring(1), 10) : 0,
+  family: 0
 };
 
 const approvedTweetsQueueName = 'tweets-approved'; // Must match what Brain agent uses

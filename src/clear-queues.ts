@@ -43,7 +43,9 @@ try {
         db: redisUrl.pathname ? parseInt(redisUrl.pathname.substring(1), 10) : 0,
         // Add connection timeout
         connectTimeout: 5000, // 5 seconds timeout
-        maxRetriesPerRequest: 2
+        maxRetriesPerRequest: 2,
+        // Add family:0 for dual-stack IPv4/IPv6 support - critical for Railway
+        family: 0
     };
     console.log('[ClearQueues] REDIS_URL parsed successfully:', redisConnectionOptions);
 } catch (e: any) {

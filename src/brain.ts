@@ -38,7 +38,8 @@ if (!REDIS_URL) {
 // Initialize Redis Client for duplicate checking
 const redisClient = new Redis(REDIS_URL, {
   maxRetriesPerRequest: null, // Important for scripts that shouldn't exit on initial connection failure
-  enableReadyCheck: false
+  enableReadyCheck: false,
+  family: 0 // Enable dual-stack IPv4/IPv6 support - critical for Railway
 });
 const REPLIED_TWEETS_SET_KEY = 'replied_tweet_urls';
 
@@ -55,6 +56,7 @@ const redisConnectionOptions = {
   port: parseInt(new URL(REDIS_URL).port, 10),
   password: new URL(REDIS_URL).password ? decodeURIComponent(new URL(REDIS_URL).password) : undefined,
   db: new URL(REDIS_URL).pathname ? parseInt(new URL(REDIS_URL).pathname.substring(1), 10) : 0,
+  family: 0 // Enable dual-stack IPv4/IPv6 support - critical for Railway
 };
 
 // Queue to consume tweets from (populated by Finder)

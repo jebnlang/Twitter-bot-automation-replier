@@ -65,6 +65,7 @@ const tweetsQueue = new Queue(tweetsQueueName, {
     port: parseInt(redisUrl.port, 10),
     password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
     db: redisUrl.pathname ? parseInt(redisUrl.pathname.substring(1), 10) : 0, // BullMQ expects a number for db
+    family: 0, // Enable dual-stack IPv4/IPv6 support - critical for Railway
   },
 });
 
@@ -76,6 +77,7 @@ const approvedTweetsQueue = new Queue(approvedTweetsQueueName, {
     port: parseInt(redisUrl.port, 10),
     password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
     db: redisUrl.pathname ? parseInt(redisUrl.pathname.substring(1), 10) : 0,
+    family: 0, // Enable dual-stack IPv4/IPv6 support - critical for Railway
   },
 });
 
