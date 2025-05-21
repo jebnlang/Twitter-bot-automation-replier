@@ -5,12 +5,8 @@
     "buildCommand": "npm run build"
   },
   "deploy": {
-    "startCommand": "npm run scheduled-poster",
+    "startCommand": "tail -f /dev/null",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
-  },
-  "cron": {
-    "schedule": "0 */6 * * *",
-    "timezone": "UTC"
   }
 } 
