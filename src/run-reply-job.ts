@@ -1,11 +1,9 @@
 import dotenv from 'dotenv';
 import { exec } from 'child_process';
-import { promisify } from 'util';
+// We'll use the callback version of exec for better error logging
 
 // Load environment variables
 dotenv.config();
-
-// const execPromise = promisify(exec); // We'll use the callback version for better error logging
 
 // Get configuration from environment variables
 // Default to 3 replies per run if not specified
@@ -43,19 +41,19 @@ async function runReplyJob() {
   try {
     // Step 1: Clear any previous queues to start fresh
     console.log('Reply Job: Clearing previous queues...');
-    await runCommand('ts-node src/clear-queues.ts');
+    await runCommand('node dist/clear-queues.js');
 
     // Step 2: Run the finder to identify tweets to reply to
     console.log('Reply Job: Running finder to identify tweets...');
-    await runCommand(`ts-node src/finder.ts --max-replies=${MAX_REPLIES_PER_RUN} --exit-when-done=true`);
+    await runCommand(`node dist/finder.js --max-replies=${MAX_REPLIES_PER_RUN} --exit-when-done=true`);
 
     // Step 3: Run the brain to generate replies for identified tweets
     console.log('Reply Job: Running brain to generate replies...');
-    await runCommand('ts-node src/brain.ts --process-all --exit-when-done=true');
+    await runCommand('node dist/brain.js --process-all --exit-when-done=true');
 
     // Step 4: Run the poster to post the approved replies
     console.log('Reply Job: Running poster to post replies...');
-    await runCommand('ts-node src/poster.ts --process-all --exit-when-done=true');
+    await runCommand('node dist/poster.js --process-all --exit-when-done=true');
 
     console.log('Reply Job: Completed successfully');
   } catch (error) {
