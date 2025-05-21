@@ -31,7 +31,7 @@ const MAX_REPLIES_PER_RUN = cmdArgs.maxReplies;
 const FINDER_SEARCH_MIN_FAVES = parseInt(process.env.FINDER_SEARCH_MIN_FAVES || '25', 10);
 
 // Redis and Playwright Configuration
-const REDIS_URL = process.env.REDIS_URL;
+let effectiveRedisUrl = process.env.REDIS_URL || process.env.REDIS_PUBLIC_URL; // Use let for potential modification
 const PLAYWRIGHT_STORAGE = process.env.PLAYWRIGHT_STORAGE || 'auth.json';
 
 // Validate critical environment variables
@@ -39,9 +39,24 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   console.error('Finder Agent: Error - SUPABASE_URL or SUPABASE_ANON_KEY is not defined. Please set them in your .env file.');
   process.exit(1);
 }
-if (!REDIS_URL) {
+if (!effectiveRedisUrl) {
   console.error('Finder Agent: Error - REDIS_URL is not defined in the environment variables.');
   process.exit(1);
+}
+
+// Ensure family=0 is in the URL string for Railway internal URLs
+try {
+  const tempUrl = new URL(effectiveRedisUrl);
+  if (tempUrl.hostname === 'redis.railway.internal' && !tempUrl.searchParams.has('family')) {
+    if (tempUrl.search) { // if there are already query params
+      effectiveRedisUrl += '&family=0';
+    } else {
+      effectiveRedisUrl += '?family=0';
+    }
+    console.log(`[Finder Agent] Modified Railway Redis URL to include family=0: ${effectiveRedisUrl}`);
+  }
+} catch (e) {
+  console.warn('[Finder Agent] Could not parse effectiveRedisUrl to check for family=0 modification:', e);
 }
 
 // Initialize Supabase Client
@@ -55,30 +70,28 @@ try {
   // Decide if we should exit or try to continue without Supabase, for now, we'll let it try to run getNextSearchTopic
 }
 
-const redisUrl = new URL(REDIS_URL);
+const redisUrl = new URL(effectiveRedisUrl); // Use the potentially modified URL
+const redisConnectionOptions = {
+  host: redisUrl.hostname,
+  port: parseInt(redisUrl.port, 10),
+  password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
+  username: redisUrl.username ? decodeURIComponent(redisUrl.username) : undefined,
+  db: redisUrl.pathname ? parseInt(redisUrl.pathname.substring(1), 10) : 0, // BullMQ expects a number for db
+  family: 0, // Enable dual-stack IPv4/IPv6 support - critical for Railway
+  connectTimeout: 10000, // Increased timeout
+  tls: redisUrl.protocol === 'rediss:' ? {} : undefined,
+};
 
 // Define the tweets queue
 const tweetsQueueName = 'tweets'; // Define name for clarity
 const tweetsQueue = new Queue(tweetsQueueName, {
-  connection: {
-    host: redisUrl.hostname,
-    port: parseInt(redisUrl.port, 10),
-    password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
-    db: redisUrl.pathname ? parseInt(redisUrl.pathname.substring(1), 10) : 0, // BullMQ expects a number for db
-    family: 0, // Enable dual-stack IPv4/IPv6 support - critical for Railway
-  },
+  connection: redisConnectionOptions,
 });
 
 // Define the approved tweets queue (for clearing purposes)
 const approvedTweetsQueueName = 'tweets-approved';
 const approvedTweetsQueue = new Queue(approvedTweetsQueueName, {
-  connection: {
-    host: redisUrl.hostname,
-    port: parseInt(redisUrl.port, 10),
-    password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
-    db: redisUrl.pathname ? parseInt(redisUrl.pathname.substring(1), 10) : 0,
-    family: 0, // Enable dual-stack IPv4/IPv6 support - critical for Railway
-  },
+  connection: redisConnectionOptions,
 });
 
 // Helper function to scroll the page
@@ -256,63 +269,71 @@ async function main() {
                 tweetUrl = `https://twitter.com${href}`;
             }
         }
-        const tweetTextElement = article.locator('div[data-testid="tweetText"]');
-        textContent = await tweetTextElement.count() > 0 ? (await tweetTextElement.first().textContent() || '').trim() : '';
-        const viewCountLocator = article.locator('[aria-label$=" views"], [aria-label$=" View"]');
-        if (await viewCountLocator.count() > 0) {
-          const rawAriaLabel = await viewCountLocator.first().getAttribute('aria-label');
-          views = parseViews(rawAriaLabel);
+
+        const tweetTextDiv = article.locator('div[data-testid="tweetText"]');
+        if (await tweetTextDiv.count() > 0) {
+            textContent = await tweetTextDiv.first().innerText();
         }
 
-        if (tweetUrl && textContent) { 
-          potentialTweets.push({ url: tweetUrl, textContent, views });
-        } else {
-          // console.log('Finder Agent: Skipped adding to potentialTweets due to missing URL or text.');
+        const viewsDiv = article.locator('a[href*="/analytics"] span[data-testid="app-text-transition-container"] span');
+        if (await viewsDiv.count() > 0) {
+            const viewText = await viewsDiv.first().innerText();
+            views = parseViews(viewText);
         }
-      } catch (e: any) {
-        console.warn('Finder Agent: Error parsing an individual tweet article:', e.message);
+
+        if (tweetUrl && textContent && views >= VIEW_THRESHOLD) {
+          if (potentialTweets.length < MAX_REPLIES_PER_RUN) {
+            potentialTweets.push({ url: tweetUrl, textContent: textContent, views: views });
+            console.log(`Finder Agent: Added potential tweet: ${tweetUrl} (Views: ${views})`);
+          } else {
+            console.log('Finder Agent: MAX_REPLIES_PER_RUN reached, not adding more tweets this scan.');
+            break; // Exit the loop once max replies are found
+          }
+        }
+      } catch (error: any) {
+        console.warn(`Finder Agent: Error parsing one tweet article: ${error.message}. Skipping it.`);
       }
     }
 
-    const popularTweets = potentialTweets
-      .filter(tweet => tweet.views >= VIEW_THRESHOLD)
-      .sort((a, b) => b.views - a.views); // Sort by views descending
+    console.log(`Finder Agent: Found ${potentialTweets.length} tweets meeting criteria (≥${VIEW_THRESHOLD} views) out of ${tweetArticles.length} parsed.`);
 
-    console.log(`Finder Agent: Found ${popularTweets.length} tweets meeting criteria (≥${VIEW_THRESHOLD} views) out of ${potentialTweets.length} parsed.`);
-
-    let tweetsEnqueued = 0;
-    for (const tweet of popularTweets) {
-      await tweetsQueue.add('newTweet', { url: tweet.url, originalText: tweet.textContent, views: tweet.views });
-      tweetsEnqueued++;
-      console.log(`Finder Agent: Enqueued tweet ${tweet.url} (Views: ${tweet.views})`);
-      
-      if (tweetsEnqueued >= MAX_REPLIES_PER_RUN) {
-        console.log(`Finder Agent: Reached MAX_REPLIES_PER_RUN limit (${MAX_REPLIES_PER_RUN}). Stopping Finder scan further.`);
-        break; 
+    let enqueuedCount = 0;
+    for (const tweet of potentialTweets) {
+      try {
+        await tweetsQueue.add('tweet', { 
+          url: tweet.url, 
+          originalText: tweet.textContent, 
+          views: tweet.views 
+        });
+        console.log(`Finder Agent: Enqueued tweet ${tweet.url} (Views: ${tweet.views})`);
+        enqueuedCount++;
+        if (enqueuedCount >= MAX_REPLIES_PER_RUN) {
+          console.log(`Finder Agent: Reached MAX_REPLIES_PER_RUN limit (${MAX_REPLIES_PER_RUN}). Stopping Finder scan further.`);
+          break;
+        }
+      } catch (queueError: any) {
+        console.error(`Finder Agent: Error enqueuing tweet ${tweet.url}: ${queueError.message}`);
       }
     }
-
-    console.log(`Finder Agent: Scan finished. ${tweetsEnqueued} tweets enqueued.`);
+    console.log(`Finder Agent: Scan finished. ${enqueuedCount} tweets enqueued.`);
 
   } catch (error: any) {
-    console.error('Finder Agent: An error occurred in main execution:', error.message ? error.message : error);
-     if (error.message && (error.message.includes('Target page, context or browser has been closed') || error.message.includes('Protocol error'))) {
-        console.error('Finder Agent: This might be due to a CAPTCHA, login issue, or network interruption. Consider re-generating auth.json or checking the browser view (set headless:false).');
-    }
+    console.error('Finder Agent: An error occurred during the main scan process:', error.message);
+    // Optionally, rethrow or handle more gracefully
   } finally {
     console.log('Finder Agent: Closing browser.');
     if (browser && browser.isConnected()) {
         await browser.close();
     }
   }
+  
+  if (cmdArgs.exitWhenDone) {
+      console.log('Finder Agent: --exit-when-done flag set, exiting process');
+      process.exit(0);
+  }
 }
 
 main().catch(error => {
-  console.error('Finder Agent: Unhandled error in main execution:', error);
+  console.error('Finder Agent: Unhandled error in main function:', error);
   process.exit(1);
-}).finally(() => {
-  if (cmdArgs.exitWhenDone) {
-    console.log('Finder Agent: --exit-when-done flag set, exiting process');
-    process.exit(0);
-  }
 });

@@ -18,34 +18,54 @@ logCommandLineArgs('Poster Agent', cmdArgs);
 // Apply the stealth plugin
 chromium.use(stealth());
 
-const REDIS_URL = process.env.REDIS_URL;
+// Redis and Playwright Configuration
+let effectiveRedisUrl = process.env.REDIS_URL || process.env.REDIS_PUBLIC_URL;
 const PLAYWRIGHT_STORAGE = process.env.PLAYWRIGHT_STORAGE || 'auth.json';
 // Default to 60 seconds if not set, for safety, though spec says 1-2s sleep post-tweet.
 // POST_RATE_MS is more of a safety throttle for the worker itself.
 const POST_RATE_MS = parseInt(process.env.POST_RATE_MS || '60000', 10);
 
-if (!REDIS_URL) {
+if (!effectiveRedisUrl) {
   console.error('Poster Agent: Error - REDIS_URL is not defined.');
   process.exit(1);
 }
 
+// Ensure family=0 is in the URL string for Railway internal URLs
+try {
+  const tempUrl = new URL(effectiveRedisUrl);
+  if (tempUrl.hostname === 'redis.railway.internal' && !tempUrl.searchParams.has('family')) {
+    if (tempUrl.search) { // if there are already query params
+      effectiveRedisUrl += '&family=0';
+    } else {
+      effectiveRedisUrl += '?family=0';
+    }
+    console.log(`[Poster Agent] Modified Railway Redis URL to include family=0: ${effectiveRedisUrl}`);
+  }
+} catch (e) {
+  console.warn('[Poster Agent] Could not parse effectiveRedisUrl to check for family=0 modification:', e);
+}
+
 // Initialize Redis Client for adding to replied set
-const redisClientPoster = new Redis(REDIS_URL, {
+const redisClientPoster = new Redis(effectiveRedisUrl, { // Use the potentially modified URL
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  family: 0
+  family: 0 // Enable dual-stack IPv4/IPv6 support - critical for Railway
 });
 const REPLIED_TWEETS_SET_KEY_POSTER = 'replied_tweet_urls'; // Ensure this matches Brain's key
 
 redisClientPoster.on('error', (err) => console.error('Poster Agent: Redis Client Error', err));
 
 // --- Queue Connection ---
+const parsedRedisUrl = new URL(effectiveRedisUrl); // Use the potentially modified URL
 const redisConnectionOptions = {
-  host: new URL(REDIS_URL).hostname,
-  port: parseInt(new URL(REDIS_URL).port, 10),
-  password: new URL(REDIS_URL).password ? decodeURIComponent(new URL(REDIS_URL).password) : undefined,
-  db: new URL(REDIS_URL).pathname ? parseInt(new URL(REDIS_URL).pathname.substring(1), 10) : 0,
-  family: 0
+  host: parsedRedisUrl.hostname,
+  port: parseInt(parsedRedisUrl.port, 10),
+  password: parsedRedisUrl.password ? decodeURIComponent(parsedRedisUrl.password) : undefined,
+  username: parsedRedisUrl.username ? decodeURIComponent(parsedRedisUrl.username) : undefined,
+  db: parsedRedisUrl.pathname ? parseInt(parsedRedisUrl.pathname.substring(1), 10) : 0,
+  family: 0, // Enable dual-stack IPv4/IPv6 support - critical for Railway
+  connectTimeout: 10000, // Increased timeout
+  tls: parsedRedisUrl.protocol === 'rediss:' ? {} : undefined,
 };
 
 const approvedTweetsQueueName = 'tweets-approved'; // Must match what Brain agent uses
@@ -248,63 +268,57 @@ async function processApprovedTweetJob(job: Job) {
 
     // Conditional pause for headless:false (though currently headless:true is set)
     // const isHeadless = browser.browserType().name() === 'chromium' && (await browser.contexts()[0].pages()[0].evaluate(() => !document.hidden));
-    // if (isHeadless === false) { 
-    //     console.log('Poster Agent: Headless mode is false. Pausing for 5 seconds to observe final state...');
-    //     await page.waitForTimeout(5000);
+    // if (!isHeadless) {
+    //   console.log('Poster Agent: Running in headed mode. Pausing for 30 seconds to allow for manual review...');
+    //   await page.waitForTimeout(30000); // 30-second pause for manual review
+    //   console.log('Poster Agent: Pause finished.');
     // }
 
   } catch (error: any) {
-    console.error('Poster Agent: An error occurred during posting operation:');
-    console.error(`Poster Agent: Error Message: ${error.message}`);
-    console.error(`Poster Agent: Error Stack: ${error.stack}`);
-    throw error; 
+    console.error(`Poster Agent: Error processing job ID ${job.id} for tweet ${job.data.url}:`, error.message);
+    // You might want to throw the error to mark the job as failed
+    // throw error;
   } finally {
-    console.log('Poster Agent: Closing browser.');
-    if (browser && browser.isConnected()) {
-      await browser.close();
-    }
+    console.log('Poster Agent: Closing browser for job ID '+job.id+'.');
+    await browser.close();
   }
 }
 
 // --- Initialize and Start Worker ---
 async function startPosterAgent() {
-  // Initialize logEntryQueue here to ensure it's ready before worker starts processing jobs
-  if (!logEntryQueue) {
+  // Initialize the log entry queue here to ensure it's ready
+  try {
     logEntryQueue = new Queue(logEntryQueueName, { connection: redisConnectionOptions });
+    console.log(`Poster Agent: Successfully connected to log entry queue: ${logEntryQueueName}`);
+  } catch(e: any) {
+      console.error(`Poster Agent: FATAL - Could not connect to log entry queue ${logEntryQueueName}. Exiting. Error: ${e.message}`);
+      process.exit(1);
   }
+
   console.log(`Poster Agent: Starting worker, listening to queue: "${approvedTweetsQueueName}"`);
-  
   const worker = new Worker(approvedTweetsQueueName, processApprovedTweetJob, {
     connection: redisConnectionOptions,
+    concurrency: 1, // Process one job at a time to avoid parallel browser sessions
     limiter: {
-      max: 1,
-      duration: POST_RATE_MS, 
+      max: 1, // Max 1 job
+      duration: POST_RATE_MS, // Per POST_RATE_MS milliseconds (e.g., 1 job per minute)
     },
-    concurrency: 1, 
     removeOnComplete: { count: 1000 },
     removeOnFail: { count: 5000 },
-    lockDuration: 5 * 60 * 1000, 
   });
 
-  worker.on('completed', (job) => {
-    console.log(`Poster Agent: Job ID ${job.id} (Tweet URL: ${job.data.url}) posted successfully.`);
+  worker.on('completed', job => {
+    console.log(`Poster Agent: Job ID ${job.id} completed successfully.`);
   });
 
   worker.on('failed', (job, err) => {
-    console.error(`Poster Agent: Job ID ${job?.id} (Tweet URL: ${job?.data?.url}) failed to post with error: ${err.message}`);
-  });
-  
-  worker.on('error', err => {
-    console.error('Poster Agent: Worker encountered an error:', err);
+    console.error(`Poster Agent: Job ID ${job?.id} failed with error:`, err.message);
   });
 
-  console.log('Poster Agent: Worker started.');
-  
   // If processAll flag is set, wait for all jobs to be processed
   if (cmdArgs.processAll) {
     console.log('Poster Agent: --process-all flag set, will process all jobs then exit');
     
-    // Check queue size every second
     const checkInterval = setInterval(async () => {
       try {
         const waitingCount = await approvedTweetsQueue.getWaitingCount();
@@ -320,12 +334,8 @@ async function startPosterAgent() {
           if (cmdArgs.exitWhenDone) {
             console.log('Poster Agent: --exit-when-done flag set, closing worker and exiting');
             await worker.close();
-            if (logEntryQueue) {
-              await logEntryQueue.close();
-            }
-            if (redisClientPoster && typeof redisClientPoster.quit === 'function') {
-              await redisClientPoster.quit();
-            }
+            await redisClientPoster.quit();
+            await logEntryQueue.close();
             process.exit(0);
           }
         }
@@ -336,18 +346,16 @@ async function startPosterAgent() {
   }
 
   const gracefulShutdown = async () => {
-    console.log('Poster Agent: SIGINT/SIGTERM received, shutting down worker and queue...');
+    console.log('Poster Agent: SIGINT/SIGTERM received, shutting down worker...');
     await worker.close();
+    await redisClientPoster.quit();
     if (logEntryQueue) {
-        await logEntryQueue.close();
+      await logEntryQueue.close();
     }
-    // Consider closing redisClientPoster as well if it has an explicit close method
-    if (redisClientPoster && typeof redisClientPoster.quit === 'function') {
-        await redisClientPoster.quit();
-    }
-    console.log('Poster Agent: Worker and queues shut down.');
+    console.log('Poster Agent: Worker shut down.');
     process.exit(0);
   };
+
   process.on('SIGINT', gracefulShutdown);
   process.on('SIGTERM', gracefulShutdown);
 }
