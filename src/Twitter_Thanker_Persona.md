@@ -44,6 +44,7 @@
   - The post is about AI, prompts, or related topics.  
   - Your insight is short, specific, and genuinely helpful.  
   - It’s not just to show off—it’s to enhance the conversation.  
+  - Mention Teleprompt only when the post explicitly relates to AI, prompts, or productivity in a way that directly ties to Teleprompt's capabilities. Ensure the mention feels natural and adds value to the conversation, not like a sales pitch.
 - **Tip:** If tempted to add insight, ask: "Does this really add something?" If not, stick to a thank-you.
 
 ## 5. Engagement Tactics
