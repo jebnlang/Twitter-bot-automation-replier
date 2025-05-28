@@ -257,6 +257,21 @@ async function main() {
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     console.log('Finder Agent: Successfully navigated to search results page.');
     
+    // Additional wait for Railway environment - let the page fully load
+    console.log('Finder Agent: Waiting 10 seconds for page to fully load (Railway timing fix)...');
+    await page.waitForTimeout(10000);
+    
+    // Wait for any tweets to appear before proceeding
+    try {
+      await page.waitForSelector('article[data-testid="tweet"], article, [data-testid="cellInnerDiv"]', { 
+        timeout: 10000,
+        state: 'visible'
+      });
+      console.log('Finder Agent: Tweet elements detected on page.');
+    } catch (waitError: any) {
+      console.log('Finder Agent: No tweet elements detected after waiting. Proceeding anyway...');
+    }
+
     // Update the timestamp for the used topic
     await updateTopicTimestamp(currentTopicId);
 
@@ -265,11 +280,65 @@ async function main() {
     console.log('Finder Agent: Proceeding with scrolling and tweet extraction...');
     await scrollPage(page, 3, 2500); // Scroll 3 times, 2.5s delay
 
+    // Additional wait after scrolling for Railway environment
+    console.log('Finder Agent: Waiting additional 5 seconds after scrolling for content to load...');
+    await page.waitForTimeout(5000);
+
     console.log(`Finder Agent: Looking for tweets with at least ${VIEW_THRESHOLD} views.`);
     const potentialTweets: { url: string; textContent: string; views: number; likes: number; retweets: number; replies: number }[] = [];
 
     const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
     console.log(`Finder Agent: Found ${tweetArticles.length} potential tweet articles after scrolling.`);
+
+    // DIAGNOSTIC: If no tweets found, let's debug what's on the page
+    if (tweetArticles.length === 0) {
+      console.log('Finder Agent: DIAGNOSTIC - No tweet articles found. Investigating page content...');
+      
+      // Take a screenshot for debugging
+      try {
+        await page.screenshot({ path: 'debug-no-tweets.png', fullPage: true });
+        console.log('Finder Agent: DIAGNOSTIC - Screenshot saved as debug-no-tweets.png');
+      } catch (screenshotError: any) {
+        console.log('Finder Agent: DIAGNOSTIC - Could not take screenshot:', screenshotError.message);
+      }
+      
+      // Check if we're on the right page
+      const currentUrl = page.url();
+      console.log(`Finder Agent: DIAGNOSTIC - Current URL: ${currentUrl}`);
+      
+      // Check page title
+      const pageTitle = await page.title();
+      console.log(`Finder Agent: DIAGNOSTIC - Page title: ${pageTitle}`);
+      
+      // Look for any error messages or login prompts
+      const errorMessages = await page.locator('text=/error|Error|login|Login|sign in|Sign in/i').all();
+      if (errorMessages.length > 0) {
+        console.log(`Finder Agent: DIAGNOSTIC - Found ${errorMessages.length} potential error/login messages`);
+        for (let i = 0; i < Math.min(errorMessages.length, 3); i++) {
+          const text = await errorMessages[i].innerText();
+          console.log(`Finder Agent: DIAGNOSTIC - Message ${i + 1}: "${text}"`);
+        }
+      }
+      
+      // Check for alternative tweet selectors
+      const alternativeSelectors = [
+        'article',
+        '[data-testid*="tweet"]',
+        '[role="article"]',
+        '.tweet',
+        '[data-testid="cellInnerDiv"]'
+      ];
+      
+      for (const selector of alternativeSelectors) {
+        const elements = await page.locator(selector).all();
+        console.log(`Finder Agent: DIAGNOSTIC - Found ${elements.length} elements with selector: ${selector}`);
+      }
+      
+      // Log some page content
+      const bodyText = await page.locator('body').innerText();
+      const truncatedBody = bodyText.substring(0, 500);
+      console.log(`Finder Agent: DIAGNOSTIC - Page body (first 500 chars): ${truncatedBody}`);
+    }
 
     for (const article of tweetArticles) {
       try {

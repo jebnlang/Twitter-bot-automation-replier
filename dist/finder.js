@@ -158,6 +158,23 @@ function parseViews(viewString) {
     }
     return 0; // Return 0 if no match is found
 }
+// Helper function to parse engagement numbers (likes, retweets, replies)
+function parseEngagementNumber(numString) {
+    if (!numString)
+        return 0;
+    let numStr = numString.replace(/,/g, ''); // Remove commas
+    let number = 0;
+    if (numStr.toUpperCase().endsWith('K')) {
+        number = parseFloat(numStr.substring(0, numStr.length - 1)) * 1000;
+    }
+    else if (numStr.toUpperCase().endsWith('M')) {
+        number = parseFloat(numStr.substring(0, numStr.length - 1)) * 1000000;
+    }
+    else {
+        number = parseFloat(numStr);
+    }
+    return isNaN(number) ? 0 : number;
+}
 async function getNextSearchTopic() {
     if (!supabase) {
         console.error('Finder Agent: Supabase client is not initialized. Cannot fetch search topic.');
@@ -255,49 +272,169 @@ async function main() {
         console.log(`Finder Agent: Navigating to X.com search results for topic: "${currentTopic}"`);
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         console.log('Finder Agent: Successfully navigated to search results page.');
+        // Additional wait for Railway environment - let the page fully load
+        console.log('Finder Agent: Waiting 10 seconds for page to fully load (Railway timing fix)...');
+        await page.waitForTimeout(10000);
+        // Wait for any tweets to appear before proceeding
+        try {
+            await page.waitForSelector('article[data-testid="tweet"], article, [data-testid="cellInnerDiv"]', {
+                timeout: 10000,
+                state: 'visible'
+            });
+            console.log('Finder Agent: Tweet elements detected on page.');
+        }
+        catch (waitError) {
+            console.log('Finder Agent: No tweet elements detected after waiting. Proceeding anyway...');
+        }
         // Update the timestamp for the used topic
         await updateTopicTimestamp(currentTopicId);
         // The rest of the logic (scrolling, finding tweets, parsing, enqueuing) remains largely the same.
         // It will operate on the search results page.
         console.log('Finder Agent: Proceeding with scrolling and tweet extraction...');
         await scrollPage(page, 3, 2500); // Scroll 3 times, 2.5s delay
+        // Additional wait after scrolling for Railway environment
+        console.log('Finder Agent: Waiting additional 5 seconds after scrolling for content to load...');
+        await page.waitForTimeout(5000);
         console.log(`Finder Agent: Looking for tweets with at least ${VIEW_THRESHOLD} views.`);
         const potentialTweets = [];
         const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
         console.log(`Finder Agent: Found ${tweetArticles.length} potential tweet articles after scrolling.`);
+        // DIAGNOSTIC: If no tweets found, let's debug what's on the page
+        if (tweetArticles.length === 0) {
+            console.log('Finder Agent: DIAGNOSTIC - No tweet articles found. Investigating page content...');
+            // Take a screenshot for debugging
+            try {
+                await page.screenshot({ path: 'debug-no-tweets.png', fullPage: true });
+                console.log('Finder Agent: DIAGNOSTIC - Screenshot saved as debug-no-tweets.png');
+            }
+            catch (screenshotError) {
+                console.log('Finder Agent: DIAGNOSTIC - Could not take screenshot:', screenshotError.message);
+            }
+            // Check if we're on the right page
+            const currentUrl = page.url();
+            console.log(`Finder Agent: DIAGNOSTIC - Current URL: ${currentUrl}`);
+            // Check page title
+            const pageTitle = await page.title();
+            console.log(`Finder Agent: DIAGNOSTIC - Page title: ${pageTitle}`);
+            // Look for any error messages or login prompts
+            const errorMessages = await page.locator('text=/error|Error|login|Login|sign in|Sign in/i').all();
+            if (errorMessages.length > 0) {
+                console.log(`Finder Agent: DIAGNOSTIC - Found ${errorMessages.length} potential error/login messages`);
+                for (let i = 0; i < Math.min(errorMessages.length, 3); i++) {
+                    const text = await errorMessages[i].innerText();
+                    console.log(`Finder Agent: DIAGNOSTIC - Message ${i + 1}: "${text}"`);
+                }
+            }
+            // Check for alternative tweet selectors
+            const alternativeSelectors = [
+                'article',
+                '[data-testid*="tweet"]',
+                '[role="article"]',
+                '.tweet',
+                '[data-testid="cellInnerDiv"]'
+            ];
+            for (const selector of alternativeSelectors) {
+                const elements = await page.locator(selector).all();
+                console.log(`Finder Agent: DIAGNOSTIC - Found ${elements.length} elements with selector: ${selector}`);
+            }
+            // Log some page content
+            const bodyText = await page.locator('body').innerText();
+            const truncatedBody = bodyText.substring(0, 500);
+            console.log(`Finder Agent: DIAGNOSTIC - Page body (first 500 chars): ${truncatedBody}`);
+        }
         for (const article of tweetArticles) {
             try {
-                // ... [Existing tweet parsing logic will go here] ...
-                // For now, let's assume it correctly populates tweetUrl, textContent, views
-                let tweetUrl = "dummy_url"; // Placeholder
-                let textContent = "dummy_text"; // Placeholder
-                let views = 0; // Placeholder
-                // Simplified extraction for now to avoid further errors with truncated code
+                // Extract tweet URL from the time link
+                let tweetUrl = null;
                 const timeLinkLocator = article.locator('a:has(time[datetime])');
                 if (await timeLinkLocator.count() > 0) {
                     const href = await timeLinkLocator.first().getAttribute('href');
                     if (href && href.includes('/status/')) {
-                        tweetUrl = `https://twitter.com${href}`;
+                        tweetUrl = `https://x.com${href}`;
                     }
                 }
+                // Extract tweet text content
+                let textContent = '';
                 const tweetTextDiv = article.locator('div[data-testid="tweetText"]');
                 if (await tweetTextDiv.count() > 0) {
                     textContent = await tweetTextDiv.first().innerText();
                 }
-                const viewsDiv = article.locator('a[href*="/analytics"] span[data-testid="app-text-transition-container"] span');
-                if (await viewsDiv.count() > 0) {
-                    const viewText = await viewsDiv.first().innerText();
-                    views = parseViews(viewText);
+                // Extract engagement metrics (likes, retweets, replies)
+                let likes = 0;
+                let retweets = 0;
+                let replies = 0;
+                let views = 0;
+                // Try to get likes count
+                const likeButton = article.locator('[data-testid="like"]');
+                if (await likeButton.count() > 0) {
+                    const likeText = await likeButton.first().getAttribute('aria-label');
+                    if (likeText) {
+                        const likeMatch = likeText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KM]?)/);
+                        if (likeMatch) {
+                            likes = parseEngagementNumber(likeMatch[1]);
+                        }
+                    }
                 }
-                if (tweetUrl && textContent && views >= VIEW_THRESHOLD) {
+                // Try to get retweet count
+                const retweetButton = article.locator('[data-testid="retweet"]');
+                if (await retweetButton.count() > 0) {
+                    const retweetText = await retweetButton.first().getAttribute('aria-label');
+                    if (retweetText) {
+                        const retweetMatch = retweetText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KM]?)/);
+                        if (retweetMatch) {
+                            retweets = parseEngagementNumber(retweetMatch[1]);
+                        }
+                    }
+                }
+                // Try to get reply count
+                const replyButton = article.locator('[data-testid="reply"]');
+                if (await replyButton.count() > 0) {
+                    const replyText = await replyButton.first().getAttribute('aria-label');
+                    if (replyText) {
+                        const replyMatch = replyText.match(/(\d+(?:,\d+)*(?:\.\d+)?[KM]?)/);
+                        if (replyMatch) {
+                            replies = parseEngagementNumber(replyMatch[1]);
+                        }
+                    }
+                }
+                // Try to get views count from analytics link or view text
+                const viewsElements = await article.locator('a[href*="/analytics"], span:has-text("views"), span:has-text("view")').all();
+                for (const viewElement of viewsElements) {
+                    const viewText = await viewElement.innerText();
+                    if (viewText && viewText.toLowerCase().includes('view')) {
+                        views = parseViews(viewText);
+                        if (views > 0)
+                            break;
+                    }
+                }
+                // Log detailed parsing info for debugging
+                console.log(`Finder Agent: Parsed tweet - URL: ${tweetUrl ? 'found' : 'missing'}, Text: ${textContent.length} chars, Likes: ${likes}, Retweets: ${retweets}, Replies: ${replies}, Views: ${views}`);
+                // Check if tweet meets our criteria
+                // Since we're already filtering by min_faves in the search, we should accept tweets with the minimum likes
+                // Use likes count instead of views for filtering since that's what we're searching for
+                const meetsLikesThreshold = likes >= FINDER_SEARCH_MIN_FAVES;
+                // Only apply view threshold if it's greater than 0, otherwise ignore view criterion
+                const meetsViewsThreshold = VIEW_THRESHOLD > 0 ? views >= VIEW_THRESHOLD : true;
+                if (tweetUrl && textContent && (meetsLikesThreshold || meetsViewsThreshold)) {
                     if (potentialTweets.length < MAX_REPLIES_PER_RUN) {
-                        potentialTweets.push({ url: tweetUrl, textContent: textContent, views: views });
-                        console.log(`Finder Agent: Added potential tweet: ${tweetUrl} (Views: ${views})`);
+                        potentialTweets.push({
+                            url: tweetUrl,
+                            textContent: textContent,
+                            views: views,
+                            likes: likes,
+                            retweets: retweets,
+                            replies: replies
+                        });
+                        console.log(`Finder Agent: Added potential tweet: ${tweetUrl} (Likes: ${likes}, Views: ${views})`);
                     }
                     else {
                         console.log('Finder Agent: MAX_REPLIES_PER_RUN reached, not adding more tweets this scan.');
                         break; // Exit the loop once max replies are found
                     }
+                }
+                else {
+                    const viewCriterion = VIEW_THRESHOLD > 0 ? `Views: ${views}/${VIEW_THRESHOLD}` : 'Views: ignored (threshold=0)';
+                    console.log(`Finder Agent: Tweet skipped - URL: ${!!tweetUrl}, Text: ${!!textContent}, Likes: ${likes}/${FINDER_SEARCH_MIN_FAVES}, ${viewCriterion}`);
                 }
             }
             catch (error) {
@@ -311,9 +448,12 @@ async function main() {
                 await tweetsQueue.add('tweet', {
                     url: tweet.url,
                     originalText: tweet.textContent,
-                    views: tweet.views
+                    views: tweet.views,
+                    likes: tweet.likes,
+                    retweets: tweet.retweets,
+                    replies: tweet.replies
                 });
-                console.log(`Finder Agent: Enqueued tweet ${tweet.url} (Views: ${tweet.views})`);
+                console.log(`Finder Agent: Enqueued tweet ${tweet.url} (Likes: ${tweet.likes}, Views: ${tweet.views})`);
                 enqueuedCount++;
                 if (enqueuedCount >= MAX_REPLIES_PER_RUN) {
                     console.log(`Finder Agent: Reached MAX_REPLIES_PER_RUN limit (${MAX_REPLIES_PER_RUN}). Stopping Finder scan further.`);
