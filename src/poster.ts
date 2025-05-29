@@ -7,6 +7,7 @@ import path from 'path'; // For resolving PLAYWRIGHT_STORAGE
 // import readline from 'readline'; // readline is no longer used
 import Redis from 'ioredis'; // Import IORedis
 import { parseCommandLineArgs, logCommandLineArgs } from './cmd-utils';
+import { getAuthState, cleanupTempAuth } from './auth-utils';
 
 // Load environment variables
 dotenv.config();
@@ -122,17 +123,18 @@ async function processApprovedTweetJob(job: Job) {
   // console.log('Poster Agent: Reply approved. Code execution continuing after approval. Proceeding to post...'); // Temporarily removed
   console.log('Poster Agent: Auto-approving and proceeding to post job ID '+job.id+'...'); // New log for auto-approval
 
-  const storageStatePath = path.resolve(PLAYWRIGHT_STORAGE);
-  if (!(await import('fs')).existsSync(storageStatePath)) {
-    console.error(`Poster Agent: Error - PLAYWRIGHT_STORAGE path ("${storageStatePath}") does not exist. Please run authentication.`);
-    // We might want to throw an error here to make the job fail and retry later
-    throw new Error('Authentication file not found. Poster cannot proceed.'); 
+  let authStatePath: string;
+  try {
+    authStatePath = await getAuthState();
+  } catch (error: any) {
+    console.error('Poster Agent: Authentication error:', error.message);
+    throw new Error('Authentication file not found. Poster cannot proceed.');
   }
 
   const browser = await chromium.launch({ headless: true }); // For debugging
   // const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
-    storageState: storageStatePath,
+    storageState: authStatePath,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
   });
   const page = await context.newPage();
@@ -276,11 +278,15 @@ async function processApprovedTweetJob(job: Job) {
 
   } catch (error: any) {
     console.error(`Poster Agent: Error processing job ID ${job.id} for tweet ${job.data.url}:`, error.message);
-    // You might want to throw the error to mark the job as failed
-    // throw error;
+    throw error;
   } finally {
-    console.log('Poster Agent: Closing browser for job ID '+job.id+'.');
-    await browser.close();
+    console.log('Poster Agent: Closing browser.');
+    if (browser && browser.isConnected()) {
+      await browser.close();
+    }
+    
+    // Clean up temporary auth file if it was created
+    await cleanupTempAuth();
   }
 }
 

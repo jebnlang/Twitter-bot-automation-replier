@@ -1,37 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -40,10 +7,10 @@ const bullmq_1 = require("bullmq");
 const dotenv_1 = __importDefault(require("dotenv"));
 const playwright_extra_1 = require("playwright-extra");
 const puppeteer_extra_plugin_stealth_1 = __importDefault(require("puppeteer-extra-plugin-stealth"));
-const path_1 = __importDefault(require("path")); // For resolving PLAYWRIGHT_STORAGE
 // import readline from 'readline'; // readline is no longer used
 const ioredis_1 = __importDefault(require("ioredis")); // Import IORedis
 const cmd_utils_1 = require("./cmd-utils");
+const auth_utils_1 = require("./auth-utils");
 // Load environment variables
 dotenv_1.default.config();
 // Parse command line args
@@ -141,16 +108,18 @@ async function processApprovedTweetJob(job) {
     console.log(`Poster Agent: Cleaned reply for posting: "${cleanedReply}"`);
     // console.log('Poster Agent: Reply approved. Code execution continuing after approval. Proceeding to post...'); // Temporarily removed
     console.log('Poster Agent: Auto-approving and proceeding to post job ID ' + job.id + '...'); // New log for auto-approval
-    const storageStatePath = path_1.default.resolve(PLAYWRIGHT_STORAGE);
-    if (!(await Promise.resolve().then(() => __importStar(require('fs')))).existsSync(storageStatePath)) {
-        console.error(`Poster Agent: Error - PLAYWRIGHT_STORAGE path ("${storageStatePath}") does not exist. Please run authentication.`);
-        // We might want to throw an error here to make the job fail and retry later
+    let authStatePath;
+    try {
+        authStatePath = await (0, auth_utils_1.getAuthState)();
+    }
+    catch (error) {
+        console.error('Poster Agent: Authentication error:', error.message);
         throw new Error('Authentication file not found. Poster cannot proceed.');
     }
     const browser = await playwright_extra_1.chromium.launch({ headless: true }); // For debugging
     // const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
-        storageState: storageStatePath,
+        storageState: authStatePath,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
     });
     const page = await context.newPage();
@@ -282,12 +251,15 @@ async function processApprovedTweetJob(job) {
     }
     catch (error) {
         console.error(`Poster Agent: Error processing job ID ${job.id} for tweet ${job.data.url}:`, error.message);
-        // You might want to throw the error to mark the job as failed
-        // throw error;
+        throw error;
     }
     finally {
-        console.log('Poster Agent: Closing browser for job ID ' + job.id + '.');
-        await browser.close();
+        console.log('Poster Agent: Closing browser.');
+        if (browser && browser.isConnected()) {
+            await browser.close();
+        }
+        // Clean up temporary auth file if it was created
+        await (0, auth_utils_1.cleanupTempAuth)();
     }
 }
 // --- Initialize and Start Worker ---

@@ -1,37 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -42,6 +9,7 @@ const bullmq_1 = require("bullmq");
 const dotenv_1 = __importDefault(require("dotenv"));
 const supabase_js_1 = require("@supabase/supabase-js");
 const cmd_utils_1 = require("./cmd-utils");
+const auth_utils_1 = require("./auth-utils");
 // Load environment variables from .env file
 dotenv_1.default.config();
 // DEBUG: Check if .env variables are loaded
@@ -223,14 +191,18 @@ async function main() {
         console.error('Finder Agent: Error during delay:', error);
     }
     // --- End of delay ---
-    if (!PLAYWRIGHT_STORAGE || !(await Promise.resolve().then(() => __importStar(require('fs')))).existsSync(PLAYWRIGHT_STORAGE)) {
-        console.error(`Error: PLAYWRIGHT_STORAGE path ("${PLAYWRIGHT_STORAGE}") is not defined or auth.json does not exist. Please run authentication.`);
+    let authStatePath;
+    try {
+        authStatePath = await (0, auth_utils_1.getAuthState)();
+    }
+    catch (error) {
+        console.error('Finder Agent: Authentication error:', error.message);
         process.exit(1);
     }
     // const browser = await chromium.launch({ headless: false }); // For debugging
     const browser = await playwright_extra_1.chromium.launch({ headless: true });
     const context = await browser.newContext({
-        storageState: PLAYWRIGHT_STORAGE,
+        storageState: authStatePath,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
         // Consider adding viewport settings if needed for consistent page layout
         // viewport: { width: 1280, height: 800 }
@@ -335,6 +307,8 @@ async function main() {
         if (browser && browser.isConnected()) {
             await browser.close();
         }
+        // Clean up temporary auth file if it was created
+        await (0, auth_utils_1.cleanupTempAuth)();
     }
     if (cmdArgs.exitWhenDone) {
         console.log('Finder Agent: --exit-when-done flag set, exiting process');

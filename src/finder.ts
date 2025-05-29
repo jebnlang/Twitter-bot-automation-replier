@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { parseCommandLineArgs, logCommandLineArgs } from './cmd-utils';
+import { getAuthState, cleanupTempAuth } from './auth-utils';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -199,15 +200,18 @@ async function main() {
   }
   // --- End of delay ---
 
-  if (!PLAYWRIGHT_STORAGE || !(await import('fs')).existsSync(PLAYWRIGHT_STORAGE)) {
-    console.error(`Error: PLAYWRIGHT_STORAGE path ("${PLAYWRIGHT_STORAGE}") is not defined or auth.json does not exist. Please run authentication.`);
+  let authStatePath: string;
+  try {
+    authStatePath = await getAuthState();
+  } catch (error: any) {
+    console.error('Finder Agent: Authentication error:', error.message);
     process.exit(1);
   }
 
   // const browser = await chromium.launch({ headless: false }); // For debugging
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
-    storageState: PLAYWRIGHT_STORAGE,
+    storageState: authStatePath,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
     // Consider adding viewport settings if needed for consistent page layout
     // viewport: { width: 1280, height: 800 }
@@ -325,6 +329,9 @@ async function main() {
     if (browser && browser.isConnected()) {
         await browser.close();
     }
+    
+    // Clean up temporary auth file if it was created
+    await cleanupTempAuth();
   }
   
   if (cmdArgs.exitWhenDone) {
